@@ -6,7 +6,10 @@ readme = "README.md"
 requires-python = ">=3.13"
 license = "Apache-2.0"
 authors = [{ name = "Noe Flandre" }]
-dependencies = []
+dependencies = [
+    "huggingface-hub>=0.28",
+    "pyarrow>=25.0.1",
+]
 
 [project.scripts]
 finepdf-to-images = "finepdf_to_images.cli:main"
@@ -21,6 +24,7 @@ packages = ["src/finepdf_to_images"]
 [dependency-groups]
 docs = ["mkdocs>=1.6"]
 dev = [
+    "hypothesis>=6.100",
     "pytest>=8.3",
     "ruff>=0.14",
     "ty>=0.0.1a10",

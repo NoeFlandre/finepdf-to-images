@@ -17,6 +17,18 @@ uv run finepdf-to-images --help
 uv run finepdf-to-images version
 ```
 
+Select a bounded sample from the pinned shard (see [Pinned input](source.md)):
+
+```bash
+uv run finepdf-to-images select --limit 100 --out out/select
+```
+
+Or entirely offline, against the committed fixture shard:
+
+```bash
+uv run finepdf-to-images select --source-dir tests/fixtures/shards --limit 5 --out out/select
+```
+
 Exit codes are a stable contract:
 
 | Code | Meaning |
