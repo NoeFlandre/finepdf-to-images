@@ -22,9 +22,7 @@ def write_bytes(path: pathlib.Path, data: bytes) -> pathlib.Path:
             os.fsync(stream.fileno())
         # mkstemp creates 0600 and replace preserves it; published artifacts should follow the
         # process umask like any other written file.
-        umask = os.umask(0)
-        os.umask(umask)
-        pathlib.Path(temporary).chmod(0o666 & ~umask)
+        _chmod_to_umask(pathlib.Path(temporary))
         pathlib.Path(temporary).replace(path)
         _fsync_directory(path.parent)
     except BaseException:
@@ -37,10 +35,33 @@ def read_bytes(path: pathlib.Path) -> bytes:
     return path.read_bytes()
 
 
+def _chmod_to_umask(path: pathlib.Path) -> None:
+    """Give ``path`` the mode a normally created file would have had.
+
+    Best effort: a filesystem without POSIX modes (an exFAT external volume, a bind mount in a
+    container) is not a reason to fail a write whose bytes are already on disk.
+    """
+    current = os.umask(0)
+    try:
+        os.umask(current)
+        path.chmod(0o666 & ~current)
+    except OSError:
+        pass
+
+
 def _fsync_directory(directory: pathlib.Path) -> None:
-    """Make the rename itself durable, not just the bytes it points at."""
-    fd = os.open(directory, os.O_RDONLY)
+    """Make the rename itself durable, not just the bytes it points at.
+
+    Best effort for the same reason: this runs *after* ``replace``, so the file is already
+    published. Failing here would report an error for a write that succeeded.
+    """
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
     try:
         os.fsync(fd)
+    except OSError:
+        pass
     finally:
         os.close(fd)

@@ -42,7 +42,12 @@ class ShardWindow:
 
 
 class ShardReader(Protocol):
-    """Reads at most ``max_rows`` rows from the start of a shard."""
+    """Returns at most ``max_rows`` rows from the start of a shard.
+
+    Only the returned ``rows`` are capped. ``rows_fetched`` may legitimately exceed ``max_rows``,
+    because a row group is the smallest unit Parquet can fetch: asking for 100 rows of a shard with
+    1,000-row groups fetches 1,000. That gap is exactly what the manifest exists to make visible.
+    """
 
     def read(
         self, ref: SourceRef, *, max_rows: int, columns: Sequence[str] = SELECTED_COLUMNS
