@@ -11,8 +11,8 @@ site/
 dist/
 build/
 *.egg-info/
-data/
-out/
+/data/
+/out/
 .mutmut-cache
 mutants/
 .DS_Store

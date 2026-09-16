@@ -22,6 +22,6 @@ the selected source PDFs, extracts their embedded images, and publishes the boun
 | --- | --- | --- |
 | Domain | `finepdf_to_images.domain` | Pure. No network, filesystem, PDF or Hub imports. |
 | Adapters | `finepdf_to_images.adapters` | All side effects, thin and injectable. |
-| Composition | `finepdf_to_images.cli` | Wires adapters into the domain. |
+| Composition | `finepdf_to_images.cli`, `finepdf_to_images.pipeline` | Wires adapters into the domain. |
 
 These rules are executable: see `tests/architecture/`.

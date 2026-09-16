@@ -3,7 +3,7 @@
 ## Layering
 
 ```
-cli                 composition root (a `pipeline` module joins it with the pipeline issues)
+cli / pipeline      composition roots
         |
    adapters         Hugging Face, HTTP, filesystem, PDF, publishing
         |
