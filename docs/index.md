@@ -13,8 +13,8 @@ the selected source PDFs, extracts their embedded images, and publishes the boun
 - It does **not** download, enumerate, or mirror the FinePDFs corpus.
 - It does **not** render pages, run OCR, or classify images.
 - It does **not** assert that any retrieved artifact is freely redistributable. Publication is
-  governed by a conservative, testable policy; artifacts with unknown permission are excluded from
-  public binary publication.
+  governed by a [conservative, testable policy](policy.md): bytes are published only on positive,
+  human-recorded evidence, and the pilot ships none.
 
 ## Layout
 

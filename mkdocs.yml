@@ -7,6 +7,7 @@ nav:
   - Home: index.md
   - Quickstart: quickstart.md
   - Pinned input: source.md
+  - Publication policy: policy.md
   - Architecture: architecture.md
   - Quality gates: quality.md
   - Decisions:
@@ -15,4 +16,5 @@ nav:
       - ADR-0002 uv, Ruff, ty and a committed lockfile: adr/0002-uv-ruff-ty-toolchain.md
       - ADR-0003 A dependency-free argparse CLI: adr/0003-argparse-cli.md
       - ADR-0004 One pinned shard, one bounded window: adr/0004-pinned-tiny-shard-input.md
+      - ADR-0005 Refuse by default, publish on positive evidence only: adr/0005-conservative-publication-policy.md
   - Technical debt: technical-debt.md
