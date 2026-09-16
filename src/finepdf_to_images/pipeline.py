@@ -221,6 +221,19 @@ def _fetch_one(
             ),
             b"",
         )
+    except Exception as error:  # a transport must never abort the whole run
+        # Belt and braces behind HttpxTransport's own catch-all. One malformed row must not lose
+        # every record already fetched, and the manifest is only written after this loop.
+        return (
+            retrieval_failure(
+                row_index=row_index,
+                row_id=row_id,
+                url=raw_url,
+                reason=FailureReason.TRANSPORT_ERROR,
+                detail=f"{type(error).__name__}: {error}",
+            ),
+            b"",
+        )
 
     if response.truncated:
         return (
@@ -281,10 +294,16 @@ def run_retrieve(
                 # cannot produce a second copy under a different name.
                 write_bytes(out_dir / record.path, body)
 
-        entry["publication"] = policy.decide(
-            {**dict(source), **record.as_dict(), "sha256": record.sha256},
-            require_artifact_hash=record.ok,
-        ).as_dict()
+        # Explicit field pick rather than a blanket merge: relying on the select manifest's
+        # source block never growing a `url` or `row_index` key is a fragile contract.
+        provenance = {
+            **{key: source.get(key) for key in ("dataset", "revision", "config", "split", "shard")},
+            "row_index": record.row_index,
+            "row_id": record.row_id,
+            "url": record.url,
+            "sha256": record.sha256,
+        }
+        entry["publication"] = policy.decide(provenance, require_artifact_hash=record.ok).as_dict()
         records.append(entry)
 
     manifest: dict[str, Any] = {

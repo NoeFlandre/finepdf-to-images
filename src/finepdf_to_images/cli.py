@@ -92,7 +92,7 @@ def _cmd_score(args: argparse.Namespace) -> int:
 def _cmd_retrieve(args: argparse.Namespace) -> int:
     scored = read_jsonl(pathlib.Path(args.scored))
     rows = [row for row in scored if not args.relevant_only or _is_relevant(row)]
-    source = json.loads(read_bytes(pathlib.Path(args.select_manifest)))["source"]
+    source = _source_from(pathlib.Path(args.select_manifest))
     limits = RetrievalLimits(
         connect_timeout=args.connect_timeout,
         read_timeout=args.read_timeout,
@@ -115,6 +115,21 @@ def _cmd_retrieve(args: argparse.Namespace) -> int:
         print(f"  {reason:<20} {count}")
     print(f"manifest   {result.manifest_path}")
     return EXIT_OK
+
+
+def _source_from(path: pathlib.Path) -> Mapping[str, Any]:
+    """Read the select manifest's source block, refusing anything that is not one.
+
+    Pointing --select-manifest at the *score* manifest is an easy mistake, and it used to produce
+    a bare KeyError traceback rather than a diagnostic.
+    """
+    manifest = json.loads(read_bytes(path))
+    if not isinstance(manifest, dict) or manifest.get("stage") != "select":
+        raise ValueError(f"{path} is not a select manifest (stage is not 'select')")
+    source = manifest.get("source")
+    if not isinstance(source, dict):
+        raise ValueError(f"{path} has no usable 'source' block")
+    return source
 
 
 def _is_relevant(row: Mapping[str, Any]) -> bool:

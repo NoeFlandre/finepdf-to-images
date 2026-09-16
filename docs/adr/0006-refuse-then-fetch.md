@@ -18,8 +18,12 @@ Put every rule in `domain/retrieval.py` over plain values, and leave the adapter
 success or a recorded failure. The transport is a `Protocol`, so tests drive fixtures.
 
 Refuse non-http schemes, credentials in URLs, and any address that is loopback, private,
-link-local, reserved, multicast or unspecified. Validate PDFs by magic bytes, never by content
-type. Enforce the byte limit while streaming.
+link-local, reserved, multicast or unspecified — including the numeric encodings `ipaddress` does
+not parse, which is why a host must have a dot and a letter-initial final label. Validate PDFs by
+magic bytes, never by content type. Enforce the byte limit while streaming.
+
+Walk redirects by hand and validate **every hop**. Handing the chain to the HTTP library means the
+rules apply to hop zero only, which is the same as not having them.
 
 ## Consequences
 
@@ -28,6 +32,8 @@ type. Enforce the byte limit while streaming.
 - A failure is a record, not an exception: the run can show *why* each URL produced nothing.
 - Only IP **literals** can be checked in a pure function. A hostname that resolves to a private
   address still passes, because resolving it is I/O. Recorded as TD-006.
+- Driving redirects by hand is more code than `follow_redirects=True`, and it is the only version
+  of this design that is actually true.
 - The conservative URL rules will refuse some genuinely public documents — a host behind an
   unusual name, a URL with an odd shape. For a proof of concept that is the right direction to
   fail in, and every refusal is recorded with its reason rather than silently dropped.

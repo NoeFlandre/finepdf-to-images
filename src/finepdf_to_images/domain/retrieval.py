@@ -16,7 +16,7 @@ import enum
 import ipaddress
 import re
 from typing import Any
-from urllib.parse import SplitResult, urlsplit
+from urllib.parse import SplitResult, urljoin, urlsplit
 
 from finepdf_to_images.domain.serialization import sha256_hex
 
@@ -35,6 +35,14 @@ _HOST_RE = re.compile(
     r"\A[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*\Z"
 )
 
+#: ASCII control characters. ``urlsplit`` silently strips tab, CR and LF from a URL while other
+#: parsers (including httpx) do not, so a string containing them means two libraries disagree about
+#: what is being requested. That disagreement is a bypass by construction, so it is refused.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+#: HTTP statuses that carry a ``Location`` we would be expected to follow.
+REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
 
 class UnsafeUrlError(ValueError):
     """A URL that must not be requested. Raised *before* any network access."""
@@ -44,6 +52,7 @@ class FailureReason(enum.StrEnum):
     """Why a retrieval produced no artifact. Recorded, never swallowed."""
 
     UNSAFE_URL = "unsafe-url"
+    UNSAFE_REDIRECT = "unsafe-redirect"
     HTTP_STATUS = "http-status"
     NOT_PDF = "not-pdf"
     EMPTY_BODY = "empty-body"
@@ -122,6 +131,8 @@ def _split(raw: str) -> SplitResult:
         raise UnsafeUrlError("empty url")
     if raw != raw.strip():
         raise UnsafeUrlError(f"url has surrounding whitespace: {raw!r}")
+    if _CONTROL_CHARS.search(raw):
+        raise UnsafeUrlError(f"url contains control characters: {raw!r}")
     try:
         return urlsplit(raw)
     except ValueError as error:
@@ -142,9 +153,32 @@ def _checked_host(hostname: str | None, raw: str) -> str:
     if host in _LOCAL_HOSTNAMES:
         raise UnsafeUrlError(f"url names the local machine: {host!r}")
     _reject_private_address(host, raw)
-    if not _is_ip_literal(host) and not _HOST_RE.fullmatch(host):
+    if _is_ip_literal(host):
+        return host
+    if not _HOST_RE.fullmatch(host):
         raise UnsafeUrlError(f"malformed host {host!r} in {raw!r}")
+    _reject_numeric_host(host, raw)
     return host
+
+
+def _reject_numeric_host(host: str, raw: str) -> None:
+    """Refuse a hostname that is really an IP address in a form ``ipaddress`` does not parse.
+
+    ``ipaddress.ip_address`` only understands canonical dotted-quad notation, so
+    ``http://2130706433/``, ``http://127.1/``, ``http://0x7f000001/`` and ``http://0/`` slipped
+    past the private-address check as ordinary "hostnames" -- and the OS resolver then turned every
+    one of them back into 127.0.0.1. That is a loopback SSRF hole dressed as a DNS name.
+
+    The rule: a real public hostname has at least one dot and a final label beginning with a
+    letter. No TLD is numeric, and no TLD begins with a digit, so this costs nothing real. Punycode
+    (``xn--``) still passes.
+    """
+    labels = host.split(".")
+    if len(labels) < 2 or not labels[-1][:1].isalpha():
+        raise UnsafeUrlError(
+            f"host {host!r} in {raw!r} is not a public hostname; a numeric or single-label host "
+            "is an address in disguise"
+        )
 
 
 def _checked_port(parts: SplitResult, raw: str) -> int | None:
@@ -181,6 +215,19 @@ def _reject_private_address(host: str, raw: str) -> None:
         or address.is_unspecified
     ):
         raise UnsafeUrlError(f"url points at a non-public address {host!r}: {raw!r}")
+
+
+def next_hop(current: SafeUrl, location: str) -> SafeUrl:
+    """Resolve a redirect ``Location`` against ``current`` and validate the result.
+
+    Every hop is validated, not just the first. Without this the whole "refuse then fetch" design
+    covers hop zero only: a perfectly ordinary URL out of the crawl that answers 302 with
+    ``Location: http://169.254.169.254/latest/meta-data/`` would be followed to the cloud metadata
+    endpoint, and its body hashed and recorded as a retrieval.
+    """
+    if not location or not location.strip():
+        raise UnsafeUrlError("redirect carries no Location")
+    return validate_url(urljoin(current.url, location.strip()))
 
 
 def looks_like_pdf(data: bytes) -> bool:

@@ -9,14 +9,16 @@ site at all.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from finepdf_to_images.domain.retrieval import (
+    REDIRECT_STATUSES,
     FailureReason,
     RetrievalLimits,
     SafeUrl,
+    UnsafeUrlError,
+    next_hop,
 )
 
 
@@ -39,6 +41,9 @@ class Response:
     #: True when the transport stopped reading because the body exceeded ``max_bytes``. The body
     #: is then deliberately incomplete, and the domain records it as a size failure.
     truncated: bool = False
+    #: The ``Location`` header, when the status is a redirect. Present so fixtures can exercise the
+    #: redirect chain without a network.
+    location: str = ""
 
 
 class Transport(Protocol):
@@ -61,6 +66,22 @@ class FixtureTransport:
     requested: list[str] = field(default_factory=list)
 
     def fetch(self, url: SafeUrl, limits: RetrievalLimits) -> Response:
+        current = url
+        for hop in range(limits.max_redirects + 1):
+            response = self._one(current, limits)
+            if response.status not in REDIRECT_STATUSES or not response.location:
+                return response
+            if hop == limits.max_redirects:
+                break
+            try:
+                current = next_hop(current, response.location)
+            except UnsafeUrlError as error:
+                raise TransportError(FailureReason.UNSAFE_REDIRECT, str(error)) from error
+        raise TransportError(
+            FailureReason.TOO_MANY_REDIRECTS, f"more than {limits.max_redirects} redirects"
+        )
+
+    def _one(self, url: SafeUrl, limits: RetrievalLimits) -> Response:
         self.requested.append(url.url)
         if url.url in self.errors:
             raise self.errors[url.url]
@@ -80,11 +101,16 @@ class FixtureTransport:
 
 
 class HttpxTransport:
-    """The real transport. Streams, and stops reading at the byte limit.
+    """The real transport. Streams, stops at the byte limit, and validates every redirect hop.
 
     Streaming matters: checking the size after downloading is not a limit, it is a report. A
     server advertising a small ``Content-Length`` and sending gigabytes is an ordinary hazard of
     fetching from arbitrary hosts.
+
+    Redirects are driven by hand rather than by ``follow_redirects=True``, because the library
+    would follow them without ever showing them to :func:`validate_url`. A crawl URL answering
+    ``302 Location: http://169.254.169.254/`` must not be followed, and letting httpx decide is
+    exactly how that happens.
     """
 
     def __init__(self, user_agent: str = "finepdf-to-images/0.1 (+research POC)") -> None:
@@ -102,33 +128,53 @@ class HttpxTransport:
         attempts = limits.retries + 1
         last: Exception | None = None
 
-        for attempt in range(attempts):
+        for _attempt in range(attempts):
             try:
-                return self._attempt(httpx, url, limits, timeout)
-            except httpx.TooManyRedirects as error:
-                raise TransportError(FailureReason.TOO_MANY_REDIRECTS, str(error)) from error
+                return self._follow(httpx, url, limits, timeout)
+            except TransportError:
+                # Already classified by the domain -- an unsafe redirect or too many hops is a
+                # decision, not a transient fault, so retrying it would be pointless.
+                raise
             except httpx.TimeoutException as error:
                 # A timeout is retried once: it is a failure to get an answer, not an answer.
                 last = error
-            except httpx.HTTPError as error:
+            except Exception as error:
+                # Deliberately broad. httpx.InvalidURL and friends do not inherit from HTTPError,
+                # and one malformed row escaping here aborted an entire run -- losing every record
+                # already fetched, because the manifest is written after the loop. A failure must
+                # be a record, not an exception.
                 last = error
-            if attempt + 1 < attempts:
-                time.sleep(0)  # yield; no backoff is warranted for a single bounded retry
 
         if isinstance(last, httpx.TimeoutException):
             raise TransportError(FailureReason.TIMEOUT, str(last))
-        raise TransportError(FailureReason.TRANSPORT_ERROR, str(last))
+        raise TransportError(
+            FailureReason.TRANSPORT_ERROR, f"{type(last).__name__}: {last}" if last else "unknown"
+        )
 
-    def _attempt(self, httpx: Any, url: SafeUrl, limits: RetrievalLimits, timeout: Any) -> Response:
-        with (
-            httpx.Client(
-                timeout=timeout,
-                follow_redirects=limits.max_redirects > 0,
-                max_redirects=max(limits.max_redirects, 1),
-                headers={"User-Agent": self.user_agent, "Accept": "application/pdf,*/*;q=0.5"},
-            ) as client,
-            client.stream("GET", url.url) as response,
-        ):
+    def _follow(self, httpx: Any, url: SafeUrl, limits: RetrievalLimits, timeout: Any) -> Response:
+        """Walk the redirect chain by hand, validating every hop."""
+        current = url
+        with httpx.Client(
+            timeout=timeout,
+            follow_redirects=False,
+            headers={"User-Agent": self.user_agent, "Accept": "application/pdf,*/*;q=0.5"},
+        ) as client:
+            for hop in range(limits.max_redirects + 1):
+                response = self._stream(client, current, limits)
+                if response.status not in REDIRECT_STATUSES or not response.location:
+                    return response
+                if hop == limits.max_redirects:
+                    break
+                try:
+                    current = next_hop(current, response.location)
+                except UnsafeUrlError as error:
+                    raise TransportError(FailureReason.UNSAFE_REDIRECT, str(error)) from error
+        raise TransportError(
+            FailureReason.TOO_MANY_REDIRECTS, f"more than {limits.max_redirects} redirects"
+        )
+
+    def _stream(self, client: Any, url: SafeUrl, limits: RetrievalLimits) -> Response:
+        with client.stream("GET", url.url) as response:
             chunks: list[bytes] = []
             size = 0
             truncated = False
@@ -143,4 +189,5 @@ class HttpxTransport:
                 content_type=response.headers.get("content-type", ""),
                 body=b"".join(chunks),
                 truncated=truncated,
+                location=response.headers.get("location", ""),
             )

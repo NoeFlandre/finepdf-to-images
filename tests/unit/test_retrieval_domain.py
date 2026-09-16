@@ -21,6 +21,7 @@ from finepdf_to_images.domain.retrieval import (
     artifact_path,
     evaluate,
     looks_like_pdf,
+    next_hop,
     validate_url,
 )
 from finepdf_to_images.domain.serialization import sha256_hex
@@ -120,6 +121,52 @@ def test_addresses_inside_our_own_network_are_refused(url: str) -> None:
         validate_url(url)
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://2130706433/x.pdf",
+        "http://127.1/x.pdf",
+        "http://0x7f000001/x.pdf",
+        "http://0177.0.0.1/x.pdf",
+        "http://0x7f.0.0.1/x.pdf",
+        "http://0/x.pdf",
+        "http://017700000001/x.pdf",
+        "http://example/x.pdf",
+        "http://intranet/x.pdf",
+    ],
+)
+def test_numeric_and_single_label_hosts_are_refused(url: str) -> None:
+    """REGRESSION: ipaddress.ip_address only parses canonical dotted quads, so every one of these
+    slipped past the private-address check as an ordinary hostname -- and the OS resolver turned
+    them straight back into 127.0.0.1. A loopback SSRF hole dressed as a DNS name."""
+    with pytest.raises(UnsafeUrlError):
+        validate_url(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://exa\tmple.invalid/x.pdf",
+        "http://example.invalid\n/x.pdf",
+        "http://example.invalid/\rx.pdf",
+        "http://example.invalid/\x00x.pdf",
+    ],
+)
+def test_urls_containing_control_characters_are_refused(url: str) -> None:
+    """REGRESSION: urlsplit silently strips tab, CR and LF while httpx does not, so the two
+    libraries disagreed about what was being requested -- a bypass by construction."""
+    with pytest.raises(UnsafeUrlError, match="control characters"):
+        validate_url(url)
+
+
+@pytest.mark.parametrize(
+    "url", ["https://xn--bcher-kva.invalid/a.pdf", "https://a1.example.invalid/a.pdf"]
+)
+def test_punycode_and_digit_leading_labels_still_pass(url: str) -> None:
+    """The numeric-host rule must not cost real hostnames: only the final label is constrained."""
+    assert validate_url(url).host
+
+
 @pytest.mark.parametrize("url", ["", "   ", "https://", "https:///a.pdf", "http://:80/a"])
 def test_empty_or_hostless_urls_are_refused(url: str) -> None:
     with pytest.raises(UnsafeUrlError):
@@ -148,6 +195,45 @@ def test_validating_arbitrary_text_either_succeeds_or_raises_unsafe(raw: str) ->
         return
     assert result.scheme in {"http", "https"}
     assert result.host
+
+
+# --------------------------------------------------------------------------- redirects
+
+
+def test_a_redirect_hop_is_validated_like_any_other_url() -> None:
+    current = validate_url("https://example.invalid/a.pdf")
+    assert next_hop(current, "https://other.invalid/b.pdf").host == "other.invalid"
+
+
+def test_a_relative_redirect_resolves_against_the_current_url() -> None:
+    current = validate_url("https://example.invalid/dir/a.pdf")
+    assert next_hop(current, "../b.pdf").url == "https://example.invalid/b.pdf"
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "http://169.254.169.254/latest/meta-data/",
+        "http://127.0.0.1/secret",
+        "file:///etc/passwd",
+        "ftp://example.invalid/a.pdf",
+        "http://2130706433/",
+        "",
+        "   ",
+    ],
+)
+def test_an_unsafe_redirect_target_is_refused(location: str) -> None:
+    """REGRESSION: redirects were followed by httpx without validate_url ever seeing the target,
+    so the whole refuse-then-fetch design covered hop zero only."""
+    current = validate_url("https://example.invalid/a.pdf")
+    with pytest.raises(UnsafeUrlError):
+        next_hop(current, location)
+
+
+def test_a_redirect_to_a_private_host_is_refused_even_from_a_public_origin() -> None:
+    current = validate_url("https://perfectly-ordinary.invalid/paper.pdf")
+    with pytest.raises(UnsafeUrlError):
+        next_hop(current, "http://10.0.0.5/internal")
 
 
 # --------------------------------------------------------------------------- PDF validation

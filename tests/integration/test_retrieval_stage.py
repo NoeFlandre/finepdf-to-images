@@ -200,6 +200,109 @@ def test_failures_are_counted_by_reason(tmp_path: pathlib.Path) -> None:
     assert result.manifest["failures"] == {"not-pdf": 1, "unsafe-url": 1}
 
 
+# --------------------------------------------------------------------------- redirects
+
+
+def redirect(location: str, status: int = 302) -> Response:
+    return Response(status=status, content_type="text/html", body=b"", location=location)
+
+
+def test_a_safe_redirect_is_followed_to_the_pdf(tmp_path: pathlib.Path) -> None:
+    start, target = "https://a.invalid/go.pdf", "https://b.invalid/real.pdf"
+    result, transport = retrieve(
+        [row(0, start)], {start: redirect(target), target: pdf_response()}, tmp_path
+    )
+    assert transport.requested == [start, target]
+    assert result.retrieved == 1
+
+
+def test_a_redirect_to_the_metadata_endpoint_is_refused(tmp_path: pathlib.Path) -> None:
+    """REGRESSION: httpx followed redirects without validate_url ever seeing the target, so an
+    ordinary crawl URL answering 302 to 169.254.169.254 was fetched and its body hashed."""
+    start = "https://perfectly-ordinary.invalid/paper.pdf"
+    result, transport = retrieve(
+        [row(0, start)], {start: redirect("http://169.254.169.254/latest/meta-data/")}, tmp_path
+    )
+    assert transport.requested == [start], "the redirect target must never be requested"
+    record = read_jsonl(result.records_path)[0]
+    assert record["reason"] == FailureReason.UNSAFE_REDIRECT
+    assert record["sha256"] is None
+
+
+@pytest.mark.parametrize(
+    "location",
+    ["http://127.0.0.1/x", "file:///etc/passwd", "ftp://x.invalid/a.pdf", "http://2130706433/"],
+)
+def test_every_unsafe_redirect_target_is_refused(location: str, tmp_path: pathlib.Path) -> None:
+    start = "https://a.invalid/go.pdf"
+    result, transport = retrieve([row(0, start)], {start: redirect(location)}, tmp_path)
+    assert transport.requested == [start]
+    assert read_jsonl(result.records_path)[0]["reason"] == FailureReason.UNSAFE_REDIRECT
+
+
+def test_a_redirect_chain_longer_than_the_limit_is_refused(tmp_path: pathlib.Path) -> None:
+    urls = [f"https://hop{i}.invalid/a.pdf" for i in range(6)]
+    responses = {url: redirect(urls[i + 1]) for i, url in enumerate(urls[:-1])}
+    responses[urls[-1]] = pdf_response()
+    result, _ = retrieve(
+        [row(0, urls[0])], responses, tmp_path, limits=RetrievalLimits(max_redirects=2)
+    )
+    assert read_jsonl(result.records_path)[0]["reason"] == FailureReason.TOO_MANY_REDIRECTS
+
+
+def test_a_chain_within_the_limit_still_succeeds(tmp_path: pathlib.Path) -> None:
+    urls = [f"https://hop{i}.invalid/a.pdf" for i in range(3)]
+    responses = {url: redirect(urls[i + 1]) for i, url in enumerate(urls[:-1])}
+    responses[urls[-1]] = pdf_response()
+    result, _ = retrieve(
+        [row(0, urls[0])], responses, tmp_path, limits=RetrievalLimits(max_redirects=2)
+    )
+    assert result.retrieved == 1
+
+
+def test_a_relative_redirect_is_resolved_and_followed(tmp_path: pathlib.Path) -> None:
+    start, target = "https://a.invalid/dir/go.pdf", "https://a.invalid/real.pdf"
+    result, transport = retrieve(
+        [row(0, start)], {start: redirect("../real.pdf"), target: pdf_response()}, tmp_path
+    )
+    assert transport.requested == [start, target]
+    assert result.retrieved == 1
+
+
+# --------------------------------------------------------------------------- robustness
+
+
+def test_an_unexpected_transport_exception_becomes_a_record_not_a_crash(
+    tmp_path: pathlib.Path,
+) -> None:
+    """REGRESSION: httpx.InvalidURL does not inherit from HTTPError, so one malformed row aborted
+    the whole run -- losing every record already fetched, since the manifest is written last."""
+
+    class ExplodingTransport:
+        def fetch(self, url: object, limits: object) -> Response:
+            raise RuntimeError("something the transport never anticipated")
+
+    from finepdf_to_images.pipeline import run_retrieve as run
+
+    result = run(
+        transport=ExplodingTransport(),
+        rows=[row(0, "https://a.invalid/x.pdf"), row(1, "https://b.invalid/y.pdf")],
+        source=SOURCE,
+        out_dir=tmp_path,
+    )
+    assert result.attempted == 2
+    records = read_jsonl(result.records_path)
+    assert all(r["reason"] == FailureReason.TRANSPORT_ERROR for r in records)
+    assert "RuntimeError" in records[0]["detail"]
+
+
+def test_one_bad_row_does_not_lose_the_records_already_fetched(tmp_path: pathlib.Path) -> None:
+    good, bad = "https://good.invalid/a.pdf", "http://2130706433/x.pdf"
+    result, _ = retrieve([row(0, good), row(1, bad)], {good: pdf_response()}, tmp_path)
+    assert result.retrieved == 1
+    assert result.attempted == 2
+
+
 # --------------------------------------------------------------------------- deduplication
 
 
@@ -299,3 +402,65 @@ def test_the_manifest_is_valid_json_with_stable_keys(tmp_path: pathlib.Path) -> 
         "failures",
         "records_digest",
     }
+
+
+# --------------------------------------------------------------------------- CLI
+
+
+def run_cli(args: list[str]) -> int:
+    from finepdf_to_images.cli import main
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(args)
+    assert isinstance(excinfo.value.code, int)
+    return excinfo.value.code
+
+
+def test_cli_rejects_the_wrong_manifest_with_a_diagnostic(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """REGRESSION: pointing --select-manifest at the score manifest -- an easy mistake -- printed
+    a bare KeyError traceback."""
+    from finepdf_to_images.cli import EXIT_FAILURE
+
+    wrong = tmp_path / "manifest.json"
+    wrong.write_text('{"stage":"score","counts":{}}', encoding="utf-8")
+    scored = tmp_path / "scored.jsonl"
+    scored.write_text("", encoding="utf-8")
+    code = run_cli(
+        [
+            "retrieve",
+            "--scored",
+            str(scored),
+            "--select-manifest",
+            str(wrong),
+            "--out",
+            str(tmp_path / "o"),
+        ]
+    )
+    assert code == EXIT_FAILURE
+    assert "not a select manifest" in capsys.readouterr().err
+
+
+def test_cli_rejects_a_manifest_without_a_source_block(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from finepdf_to_images.cli import EXIT_FAILURE
+
+    wrong = tmp_path / "manifest.json"
+    wrong.write_text('{"stage":"select","source":"not-a-mapping"}', encoding="utf-8")
+    scored = tmp_path / "scored.jsonl"
+    scored.write_text("", encoding="utf-8")
+    code = run_cli(
+        [
+            "retrieve",
+            "--scored",
+            str(scored),
+            "--select-manifest",
+            str(wrong),
+            "--out",
+            str(tmp_path / "o"),
+        ]
+    )
+    assert code == EXIT_FAILURE
+    assert "no usable 'source' block" in capsys.readouterr().err
