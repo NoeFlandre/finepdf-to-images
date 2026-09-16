@@ -35,6 +35,15 @@ Score the selected rows for agriculture relevance (see [Relevance scoring](scori
 uv run finepdf-to-images score --records out/select/records.jsonl --out out/score
 ```
 
+Retrieve the source PDFs for the relevant rows (see [Retrieving PDFs](retrieval.md)):
+
+```bash
+uv run finepdf-to-images retrieve \
+  --scored out/score/scored.jsonl \
+  --select-manifest out/select/manifest.json \
+  --relevant-only --out out/retrieve
+```
+
 Exit codes are a stable contract:
 
 | Code | Meaning |

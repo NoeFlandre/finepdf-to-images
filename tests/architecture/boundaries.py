@@ -12,8 +12,14 @@ from collections.abc import Iterable, Mapping
 
 TOP_PACKAGE = "finepdf_to_images"
 
-#: Third-party and standard-library roots that perform network, filesystem, PDF or Hub I/O.
-#: ``io`` is deliberately absent: ``BytesIO`` over in-memory bytes is pure.
+#: Modules that perform network, filesystem, PDF or Hub I/O and must stay out of the domain.
+#:
+#: Entries are matched as dotted **prefixes**, not top-level names, because the rule is about I/O
+#: rather than about packages. ``urllib.request`` opens sockets and is banned; ``urllib.parse`` is
+#: pure string manipulation and is not. Banning the whole ``urllib`` package would push the domain
+#: into hand-rolling a URL parser, which is a worse outcome than the rule was protecting against.
+#:
+#: ``io`` is deliberately absent for the same reason: ``BytesIO`` over in-memory bytes is pure.
 FORBIDDEN_IN_DOMAIN = frozenset(
     {
         "PIL",
@@ -35,7 +41,10 @@ FORBIDDEN_IN_DOMAIN = frozenset(
         "socket",
         "subprocess",
         "tempfile",
-        "urllib",
+        "urllib.error",
+        "urllib.request",
+        "urllib.response",
+        "urllib.robotparser",
     }
 )
 
@@ -68,15 +77,37 @@ def package_name(parts: Iterable[str]) -> str:
     return ".".join(segments)
 
 
-def external_roots(tree: ast.Module) -> set[str]:
-    """Top-level names of every non-relative import that leaves the package."""
-    roots: set[str] = set()
+def external_modules(tree: ast.Module) -> set[str]:
+    """Dotted names of every non-relative import that leaves the package.
+
+    Full dotted names, not just roots: the forbidden list distinguishes ``urllib.request`` from
+    ``urllib.parse``, and truncating to the root would erase exactly that distinction.
+    """
+    modules: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            roots.update(alias.name.split(".")[0] for alias in node.names)
+            modules.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            roots.add(node.module.split(".")[0])
-    return {root for root in roots if root != TOP_PACKAGE}
+            modules.add(node.module)
+    return {
+        module
+        for module in modules
+        if module != TOP_PACKAGE and not module.startswith(f"{TOP_PACKAGE}.")
+    }
+
+
+def forbidden_hits(tree: ast.Module, forbidden: Iterable[str] = FORBIDDEN_IN_DOMAIN) -> set[str]:
+    """Imported modules matching a forbidden dotted prefix.
+
+    ``os`` matches ``os`` and ``os.path``; ``urllib.request`` matches itself but not
+    ``urllib.parse``.
+    """
+    banned = set(forbidden)
+    return {
+        module
+        for module in external_modules(tree)
+        if any(module == entry or module.startswith(f"{entry}.") for entry in banned)
+    }
 
 
 def internal_targets(tree: ast.Module, *, package: str) -> set[str]:

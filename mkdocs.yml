@@ -8,6 +8,7 @@ nav:
   - Quickstart: quickstart.md
   - Pinned input: source.md
   - Relevance scoring: scoring.md
+  - Retrieving PDFs: retrieval.md
   - Publication policy: policy.md
   - Architecture: architecture.md
   - Quality gates: quality.md
@@ -18,4 +19,5 @@ nav:
       - ADR-0003 A dependency-free argparse CLI: adr/0003-argparse-cli.md
       - ADR-0004 One pinned shard, one bounded window: adr/0004-pinned-tiny-shard-input.md
       - ADR-0005 Refuse by default, publish on positive evidence only: adr/0005-conservative-publication-policy.md
+      - ADR-0006 Decide in the domain, fetch in the adapter: adr/0006-refuse-then-fetch.md
   - Technical debt: technical-debt.md

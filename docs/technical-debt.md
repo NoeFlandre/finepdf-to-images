@@ -66,3 +66,18 @@ into a stage that does not exist would mean writing that stage here.
 #2 writes the card from `policy_summary()` and publishes only what `decide()` permits. Until all
 three land, the statement "this project republishes no third-party bytes" is true because no bytes
 are published at all — not because the policy refused them.
+
+## TD-006 — DNS rebinding and hostnames resolving to private addresses
+
+**State.** `validate_url` refuses IP **literals** that name a loopback, private, link-local,
+reserved, multicast or unspecified address. A *hostname* that resolves to one of those is not
+caught, and neither is a host that resolves differently between the check and the request.
+
+**Why.** Resolving a name is I/O, and the URL rules live in the pure domain precisely so they can
+be tested without a network. Closing this properly means resolving in the adapter, checking the
+resolved address, and pinning the connection to it — real work, and more than a bounded pilot that
+fetches a few dozen public documents needs.
+
+**Trigger.** Before this pipeline is ever pointed at untrusted URLs from inside a network with
+anything worth reaching, or run as a service. Until then the exposure is a developer machine
+fetching public PDFs.

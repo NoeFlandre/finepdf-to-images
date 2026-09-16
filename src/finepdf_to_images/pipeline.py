@@ -11,8 +11,19 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from finepdf_to_images.adapters.retrieval import Transport, TransportError
 from finepdf_to_images.adapters.source import ShardReader
 from finepdf_to_images.adapters.storage import write_bytes
+from finepdf_to_images.domain import policy
+from finepdf_to_images.domain.retrieval import (
+    FailureReason,
+    RetrievalLimits,
+    RetrievalRecord,
+    UnsafeUrlError,
+    validate_url,
+)
+from finepdf_to_images.domain.retrieval import evaluate as evaluate_response
+from finepdf_to_images.domain.retrieval import failure as retrieval_failure
 from finepdf_to_images.domain.scoring import score as score_text
 from finepdf_to_images.domain.scoring import vocabulary_summary
 from finepdf_to_images.domain.serialization import canonical_bytes, canonical_jsonl, content_digest
@@ -29,6 +40,7 @@ from finepdf_to_images.domain.source import (
 MANIFEST_NAME = "manifest.json"
 RECORDS_NAME = "records.jsonl"
 SCORED_NAME = "scored.jsonl"
+RETRIEVED_NAME = "retrieved.jsonl"
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,3 +166,159 @@ def run_score(*, records: Sequence[Mapping[str, Any]], out_dir: pathlib.Path) ->
         scored=len(rows),
         relevant=relevant,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalResult:
+    manifest: dict[str, Any]
+    manifest_path: pathlib.Path
+    records_path: pathlib.Path
+    attempted: int
+    retrieved: int
+    unique: int
+    failed: int
+
+
+def _fetch_one(
+    *,
+    transport: Transport,
+    limits: RetrievalLimits,
+    row: Mapping[str, Any],
+) -> tuple[RetrievalRecord, bytes]:
+    """Retrieve one row's document, converting every failure into a record rather than an error.
+
+    Returns the record and the bytes, so the caller can store them exactly once per digest.
+    """
+    row_index = int(row.get("row_index") or 0)
+    row_id = str(row.get("row_id") or "")
+    raw_url = str(row.get("url") or "")
+
+    try:
+        url = validate_url(raw_url)
+    except UnsafeUrlError as error:
+        # Rejected before any network access, which is the point of doing this in the domain.
+        return (
+            retrieval_failure(
+                row_index=row_index,
+                row_id=row_id,
+                url=raw_url,
+                reason=FailureReason.UNSAFE_URL,
+                detail=str(error),
+            ),
+            b"",
+        )
+
+    try:
+        response = transport.fetch(url, limits)
+    except TransportError as error:
+        return (
+            retrieval_failure(
+                row_index=row_index,
+                row_id=row_id,
+                url=raw_url,
+                reason=error.reason,
+                detail=error.detail,
+            ),
+            b"",
+        )
+
+    if response.truncated:
+        return (
+            retrieval_failure(
+                row_index=row_index,
+                row_id=row_id,
+                url=raw_url,
+                reason=FailureReason.TOO_LARGE,
+                detail=f"body exceeded the {limits.max_bytes} byte limit and the read was stopped",
+            ),
+            b"",
+        )
+
+    record = evaluate_response(
+        row_index=row_index,
+        row_id=row_id,
+        url=raw_url,
+        status=response.status,
+        content_type=response.content_type,
+        body=response.body,
+        limits=limits,
+    )
+    return record, (response.body if record.ok else b"")
+
+
+def run_retrieve(
+    *,
+    transport: Transport,
+    rows: Sequence[Mapping[str, Any]],
+    source: Mapping[str, Any],
+    out_dir: pathlib.Path,
+    limits: RetrievalLimits | None = None,
+) -> RetrievalResult:
+    """Retrieve the documents for already-selected, already-scored rows.
+
+    ``rows`` are the rows to fetch -- the caller decides which, so this stage does not re-implement
+    the relevance rule.
+
+    Deduplication is by content, not by URL: the same PDF served from two addresses is stored once,
+    and the second row records ``duplicate_of`` rather than a second copy on disk.
+    """
+    limits = limits or RetrievalLimits()
+    seen: dict[str, int] = {}
+    records: list[dict[str, Any]] = []
+    retrieved = 0
+
+    for row in rows:
+        record, body = _fetch_one(transport=transport, limits=limits, row=row)
+        entry = record.as_dict()
+
+        if record.ok and record.sha256 and record.path:
+            retrieved += 1
+            if record.sha256 in seen:
+                entry["duplicate_of"] = str(seen[record.sha256])
+            else:
+                seen[record.sha256] = record.row_index
+                # Written once per digest. The path is derived from the content, so re-running
+                # cannot produce a second copy under a different name.
+                write_bytes(out_dir / record.path, body)
+
+        entry["publication"] = policy.decide(
+            {**dict(source), **record.as_dict(), "sha256": record.sha256},
+            require_artifact_hash=record.ok,
+        ).as_dict()
+        records.append(entry)
+
+    manifest: dict[str, Any] = {
+        "schema_version": 1,
+        "stage": "retrieve",
+        "source": dict(source),
+        "limits": limits.as_dict(),
+        "counts": {
+            "attempted": len(records),
+            "retrieved": retrieved,
+            "unique": len(seen),
+            "failed": len(records) - retrieved,
+        },
+        "failures": _failure_counts(records),
+        "records_digest": content_digest(records),
+    }
+    records_path = write_bytes(out_dir / RETRIEVED_NAME, canonical_jsonl(records))
+    manifest_path = write_bytes(out_dir / MANIFEST_NAME, canonical_bytes(manifest) + b"\n")
+    return RetrievalResult(
+        manifest=manifest,
+        manifest_path=manifest_path,
+        records_path=records_path,
+        attempted=len(records),
+        retrieved=retrieved,
+        unique=len(seen),
+        failed=len(records) - retrieved,
+    )
+
+
+def _failure_counts(records: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """How many rows failed for each reason. A run should be able to show why, not just how many."""
+    counts: dict[str, int] = {}
+    for record in records:
+        reason = record.get("reason")
+        if reason:
+            counts[str(reason)] = counts.get(str(reason), 0) + 1
+    return dict(sorted(counts.items()))
