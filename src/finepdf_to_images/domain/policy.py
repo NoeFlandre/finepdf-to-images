@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import re
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 from typing import Any
@@ -102,7 +103,6 @@ REQUIRED_PROVENANCE: tuple[str, ...] = (
     "row_index",
     "row_id",
     "url",
-    "date",
 )
 
 #: Additionally required once a decision concerns retrieved bytes. ``metadata-only`` is only a
@@ -113,6 +113,12 @@ ARTIFACT_PROVENANCE: tuple[str, ...] = (*REQUIRED_PROVENANCE, "sha256")
 
 #: Fields that must be whole numbers rather than text.
 _INTEGER_FIELDS: frozenset[str] = frozenset({"row_index"})
+
+#: Fields that must be a SHA-256 digest. Presence alone is not enough: the point of requiring a
+#: digest is that the metadata identifies *which* bytes it stands for, and "not-a-hash" identifies
+#: nothing.
+_DIGEST_FIELDS: frozenset[str] = frozenset({"sha256"})
+_DIGEST_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
 
 class Disposition(enum.StrEnum):
@@ -146,6 +152,20 @@ class LicenseDeclaration:
             raise TypeError(f"status must be a LicenseStatus, got {self.status!r}")
         if not isinstance(self.evidence, EvidenceSource):
             raise TypeError(f"evidence must be an EvidenceSource, got {self.evidence!r}")
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> LicenseDeclaration:
+        """Rebuild from :meth:`as_dict`.
+
+        ``__post_init__`` refuses raw strings, so a serializer without a matching deserializer
+        would push the enum coercion into every caller.
+        """
+        return cls(
+            status=LicenseStatus(data["status"]),
+            identifier=data.get("identifier"),
+            evidence=EvidenceSource(data["evidence"]),
+            note=data.get("note", ""),
+        )
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -198,7 +218,14 @@ def _is_usable(field: str, value: Any) -> bool:
     if field in _INTEGER_FIELDS:
         # bool is an int subclass; True as a row index is a bug, not a row.
         return isinstance(value, int) and not isinstance(value, bool) and value >= 0
-    return isinstance(value, str) and bool(value.strip())
+    if not isinstance(value, str) or not value or value != value.strip():
+        # Surrounding whitespace is rejected rather than trimmed: these are identifiers and URLs,
+        # and the allow list already refuses " CC-BY-4.0 ", so accepting padding here would make
+        # the module inconsistent about whether padding matters.
+        return False
+    if field in _DIGEST_FIELDS:
+        return bool(_DIGEST_RE.fullmatch(value))
+    return True
 
 
 def decide(

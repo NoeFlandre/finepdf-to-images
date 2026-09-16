@@ -67,11 +67,12 @@ entry past it.
 
 ## Required provenance
 
-`dataset`, `revision`, `config`, `split`, `shard`, `row_index`, `row_id`, `url`, `date`.
+`dataset`, `revision`, `config`, `split`, `shard`, `row_index`, `row_id`, `url`.
 
 A row about retrieved bytes additionally requires `sha256` (`ARTIFACT_PROVENANCE`, passed by the
-retrieval and extraction stages as `require_artifact_hash=True`). `metadata-only` is only a
-meaningful fallback if the metadata identifies *which* bytes it stands for.
+retrieval and extraction stages as `require_artifact_hash=True`), and it must be a real 64-character
+lowercase hex digest. Presence alone would not do: `metadata-only` is only a meaningful fallback if
+the metadata identifies *which* bytes it stands for, and `"not-a-hash"` identifies nothing.
 
 Every published row carries all of these, so any artifact can be traced back to the exact FinePDFs
 row and source URL it came from.
@@ -79,12 +80,16 @@ row and source URL it came from.
 Emptiness is checked per field type rather than by falsiness. `row_index` of `0` is a real value —
 a falsiness check would silently drop every shard's first row — but an `is None` check alone is too
 loose in the other direction: `url=False` and `url=[]` would read as present. So integer fields
-must be non-negative `int` (and not `bool`, which subclasses `int`), and the rest must be
-non-blank `str`.
+must be non-negative `int` (and not `bool`, which subclasses `int`), and the rest must be non-blank
+`str` with no surrounding whitespace. Padding is refused rather than trimmed, because the allow
+list already refuses `" CC-BY-4.0 "` and the module should not be inconsistent about whether
+padding matters.
 
-FinePDFs' extraction metadata (`extractor`, `is_truncated`, language scores) is carried on
-`SourceRecord` and travels with each row, but is not *required* by the policy: a document's
-redistribution status does not depend on how well its text was extracted.
+FinePDFs' crawl date and extraction metadata (`date`, `extractor`, `is_truncated`, language scores)
+are carried on `SourceRecord` and travel with every row, but are **not required** by the policy. A
+document's redistribution status does not depend on when it was crawled or how well its text was
+extracted, and requiring them would mean excluding a fully traceable row — which would contradict
+the only reason `exclude` exists.
 
 ## Limitations
 

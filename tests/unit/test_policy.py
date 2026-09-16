@@ -36,6 +36,7 @@ COMPLETE_PROVENANCE: dict[str, Any] = {
     "url": "https://example.invalid/a.pdf",
     "date": "2023-01-30T22:07:32+00:00",
 }
+"""``date`` is carried but not required: see the crawl-metadata test below."""
 
 ARTIFACT_PROV: dict[str, Any] = {
     **COMPLETE_PROVENANCE,
@@ -228,8 +229,44 @@ def test_artifact_provenance_extends_the_base_requirement() -> None:
     assert "sha256" in ARTIFACT_PROVENANCE
 
 
-def test_date_is_required_so_crawl_metadata_survives() -> None:
-    assert "date" in REQUIRED_PROVENANCE
+def test_crawl_and_extraction_metadata_travel_without_gating_publication() -> None:
+    """They are carried on SourceRecord, but a document's redistribution status does not depend
+    on when it was crawled or how well its text was extracted, so they are not required here."""
+    assert "date" not in REQUIRED_PROVENANCE
+    assert "extractor" not in REQUIRED_PROVENANCE
+    assert missing_provenance({**COMPLETE_PROVENANCE, "date": ""}) == []
+
+
+@pytest.mark.parametrize(
+    "digest",
+    [
+        "not-a-hash",
+        "",
+        "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855a",
+        "g3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    ],
+)
+def test_an_artifact_digest_must_actually_be_a_sha256(digest: str) -> None:
+    """Presence alone is not enough: "not-a-hash" identifies no bytes at all."""
+    decision = decide({**ARTIFACT_PROV, "sha256": digest}, CLEARED, require_artifact_hash=True)
+    assert decision.disposition is Disposition.EXCLUDE
+
+
+@pytest.mark.parametrize("field", ["url", "row_id", "dataset"])
+def test_surrounding_whitespace_is_refused_not_trimmed(field: str) -> None:
+    padded = f"  {COMPLETE_PROVENANCE[field]}  "
+    assert missing_provenance({**COMPLETE_PROVENANCE, field: padded}) == [field]
+
+
+def test_a_licence_declaration_round_trips_through_its_serialized_form() -> None:
+    assert LicenseDeclaration.from_dict(CLEARED.as_dict()) == CLEARED
+
+
+def test_round_trip_rejects_an_unknown_enum_value() -> None:
+    with pytest.raises(ValueError):
+        LicenseDeclaration.from_dict({**CLEARED.as_dict(), "evidence": "trust-me"})
 
 
 # --------------------------------------------------------------------------- the core property
