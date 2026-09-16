@@ -9,7 +9,9 @@ authors = [{ name = "Noe Flandre" }]
 dependencies = [
     "httpx>=0.28.1",
     "huggingface-hub>=0.28",
+    "pillow>=12.3.0",
     "pyarrow>=25.0.1",
+    "pypdf>=6.19.0",
 ]
 
 [project.scripts]

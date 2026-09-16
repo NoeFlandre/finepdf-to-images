@@ -44,6 +44,14 @@ uv run finepdf-to-images retrieve \
   --relevant-only --out out/retrieve
 ```
 
+Extract the images embedded in those PDFs (see [Extracting images](images.md)):
+
+```bash
+uv run finepdf-to-images extract \
+  --retrieved out/retrieve/retrieved.jsonl \
+  --pdf-root out/retrieve --out out/extract
+```
+
 Exit codes are a stable contract:
 
 | Code | Meaning |

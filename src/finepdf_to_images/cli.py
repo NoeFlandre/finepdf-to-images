@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import pathlib
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from finepdf_to_images import __version__
+from finepdf_to_images.adapters.images import PypdfImageExtractor
 from finepdf_to_images.adapters.retrieval import HttpxTransport
 from finepdf_to_images.adapters.source import (
     HuggingFaceShardReader,
@@ -40,7 +42,7 @@ from finepdf_to_images.domain.source import (
     SourceConfigurationError,
     SourceRef,
 )
-from finepdf_to_images.pipeline import run_retrieve, run_score, run_select
+from finepdf_to_images.pipeline import run_extract, run_retrieve, run_score, run_select
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
@@ -137,6 +139,27 @@ def _is_relevant(row: Mapping[str, Any]) -> bool:
     return bool(isinstance(relevance, dict) and relevance.get("relevant"))
 
 
+def _cmd_extract(args: argparse.Namespace) -> int:
+    # pypdf logs a warning per malformed image XObject. Real documents produce dozens, which
+    # buries the actual result; the per-document reason is recorded in the manifest either way.
+    logging.getLogger("pypdf").setLevel(logging.ERROR)
+    records = read_jsonl(pathlib.Path(args.retrieved))
+    result = run_extract(
+        extractor=PypdfImageExtractor(),
+        records=records,
+        pdf_root=pathlib.Path(args.pdf_root),
+        out_dir=pathlib.Path(args.out),
+    )
+    counts = result.manifest["counts"]
+    print(f"documents  {counts['documents']}")
+    print(f"  with images   {counts['documents_with_images']}")
+    print(f"  failed        {counts['documents_failed']}")
+    print(f"images     {counts['images']}")
+    print(f"unique     {counts['unique_images']}")
+    print(f"manifest   {result.manifest_path}")
+    return EXIT_OK
+
+
 #: Subcommand dispatch. ``argparse`` guarantees the key exists before we look it up, so there is
 #: no unreachable fallback branch to carry.
 COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
@@ -144,6 +167,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "select": _cmd_select,
     "score": _cmd_score,
     "retrieve": _cmd_retrieve,
+    "extract": _cmd_extract,
 }
 
 
@@ -220,6 +244,24 @@ def _add_retrieve_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--retries", type=int, default=defaults.retries)
 
 
+def _add_extract_parser(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser(
+        "extract",
+        help="extract and index the images embedded in retrieved PDFs",
+        description=(
+            "Extract every image embedded in each retrieved PDF, deduplicated by SHA-256 and "
+            "indexed with document id, PDF hash, page and image index, media type, dimensions "
+            "and byte size. A PDF with no embedded images is a zero-image success, not a "
+            "failure. Page rendering and OCR are out of scope."
+        ),
+    )
+    parser.add_argument("--retrieved", required=True, help="retrieved.jsonl written by `retrieve`")
+    parser.add_argument(
+        "--pdf-root", required=True, help="directory the retrieve stage wrote its pdfs/ tree into"
+    )
+    parser.add_argument("--out", required=True, help="output directory")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser. Kept separate so documentation can render ``--help``."""
     parser = argparse.ArgumentParser(
@@ -235,6 +277,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_select_parser(subparsers)
     _add_score_parser(subparsers)
     _add_retrieve_parser(subparsers)
+    _add_extract_parser(subparsers)
     return parser
 
 

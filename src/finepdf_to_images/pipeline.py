@@ -11,10 +11,17 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from finepdf_to_images.adapters.images import ImageExtractor
 from finepdf_to_images.adapters.retrieval import Transport, TransportError
 from finepdf_to_images.adapters.source import ShardReader
-from finepdf_to_images.adapters.storage import write_bytes
+from finepdf_to_images.adapters.storage import read_bytes, write_bytes
 from finepdf_to_images.domain import policy
+from finepdf_to_images.domain.images import (
+    ImageExtractionError,
+    ImageRecord,
+    build_image_record,
+    sort_key,
+)
 from finepdf_to_images.domain.retrieval import (
     FailureReason,
     RetrievalLimits,
@@ -41,6 +48,8 @@ MANIFEST_NAME = "manifest.json"
 RECORDS_NAME = "records.jsonl"
 SCORED_NAME = "scored.jsonl"
 RETRIEVED_NAME = "retrieved.jsonl"
+IMAGES_NAME = "images.jsonl"
+DOCUMENTS_NAME = "documents.jsonl"
 
 
 @dataclass(frozen=True, slots=True)
@@ -342,3 +351,144 @@ def _failure_counts(records: Sequence[Mapping[str, Any]]) -> dict[str, int]:
         if reason:
             counts[str(reason)] = counts.get(str(reason), 0) + 1
     return dict(sorted(counts.items()))
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionResult:
+    manifest: dict[str, Any]
+    manifest_path: pathlib.Path
+    images_path: pathlib.Path
+    documents_path: pathlib.Path
+    documents: int
+    with_images: int
+    images: int
+    unique_images: int
+    failed: int
+
+
+def _extract_one(
+    *,
+    extractor: ImageExtractor,
+    record: Mapping[str, Any],
+    pdf_bytes: bytes,
+) -> tuple[list[ImageRecord], dict[tuple[int, int], bytes], str]:
+    """Extract one document's images, or return the reason it could not be done.
+
+    Returns the records, the raw bytes keyed by position, and the failure reason. The bytes are
+    returned alongside rather than threaded through the records, which would put megabytes of
+    image data into every manifest row -- and re-extracting per image would re-parse the whole
+    document once per picture.
+    """
+    row_id = str(record.get("row_id") or "")
+    row_index = int(record.get("row_index") or 0)
+    pdf_sha256 = str(record.get("sha256") or "")
+
+    try:
+        extracted = extractor.extract(pdf_bytes)
+        records = [
+            build_image_record(
+                document_row_id=row_id,
+                document_row_index=row_index,
+                pdf_sha256=pdf_sha256,
+                page_index=image.page_index,
+                image_index=image.image_index,
+                data=image.data,
+                mime=image.mime,
+                width=image.width,
+                height=image.height,
+            )
+            for image in extracted
+        ]
+    except ImageExtractionError as error:
+        # A malformed document fails with a diagnostic and contributes nothing. Partial output
+        # from a document we could not read would be worse than none.
+        return [], {}, str(error)
+    return records, {(i.page_index, i.image_index): i.data for i in extracted}, ""
+
+
+def run_extract(
+    *,
+    extractor: ImageExtractor,
+    records: Sequence[Mapping[str, Any]],
+    pdf_root: pathlib.Path,
+    out_dir: pathlib.Path,
+) -> ExtractionResult:
+    """Extract and index the images in every successfully retrieved PDF.
+
+    Only records the retrieval stage marked ``ok`` are considered; a document that was never
+    fetched has nothing to extract. A PDF with no embedded images is an explicit zero-image
+    success, not a failure -- most PDFs on the open web genuinely contain none.
+
+    Images are deduplicated by content across the whole run, so the same logo on forty pages is one
+    artifact with forty references.
+    """
+    image_rows: list[dict[str, Any]] = []
+    document_rows: list[dict[str, Any]] = []
+    seen: dict[str, str] = {}
+    failed = 0
+    with_images = 0
+
+    for record in records:
+        if not record.get("ok") or not record.get("path"):
+            continue
+        pdf_bytes = read_bytes(pdf_root / str(record["path"]))
+        images, payloads, error = _extract_one(
+            extractor=extractor, record=record, pdf_bytes=pdf_bytes
+        )
+
+        document_rows.append(
+            {
+                "row_index": record.get("row_index"),
+                "row_id": record.get("row_id"),
+                "url": record.get("url"),
+                "pdf_sha256": record.get("sha256"),
+                "pdf_path": record.get("path"),
+                "image_count": len(images),
+                "ok": not error,
+                "error": error,
+            }
+        )
+        if error:
+            failed += 1
+            continue
+        if images:
+            with_images += 1
+
+        for image in sorted(images, key=sort_key):
+            entry = image.as_dict()
+            if image.sha256 in seen:
+                entry["duplicate_of"] = seen[image.sha256]
+            else:
+                seen[image.sha256] = (
+                    f"{image.document_row_id}#{image.page_index}.{image.image_index}"
+                )
+                write_bytes(out_dir / image.path, payloads[(image.page_index, image.image_index)])
+            image_rows.append(entry)
+
+    manifest: dict[str, Any] = {
+        "schema_version": 1,
+        "stage": "extract",
+        "counts": {
+            "documents": len(document_rows),
+            "documents_with_images": with_images,
+            "documents_failed": failed,
+            "images": len(image_rows),
+            "unique_images": len(seen),
+        },
+        "images_digest": content_digest(image_rows),
+        "documents_digest": content_digest(document_rows),
+    }
+    images_path = write_bytes(out_dir / IMAGES_NAME, canonical_jsonl(image_rows))
+    documents_path = write_bytes(out_dir / DOCUMENTS_NAME, canonical_jsonl(document_rows))
+    manifest_path = write_bytes(out_dir / MANIFEST_NAME, canonical_bytes(manifest) + b"\n")
+    return ExtractionResult(
+        manifest=manifest,
+        manifest_path=manifest_path,
+        images_path=images_path,
+        documents_path=documents_path,
+        documents=len(document_rows),
+        with_images=with_images,
+        images=len(image_rows),
+        unique_images=len(seen),
+        failed=failed,
+    )
