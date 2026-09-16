@@ -38,10 +38,15 @@ read must hash back to that digest. Without the first check a hand-edited `retri
 would read arbitrary files and publish the images inside them. The second catches a corrupted or
 swapped artifact rather than indexing it under a false identity.
 
-`max_images` is counted from the page resource dictionaries **before any image is decoded**.
-Checking it while collecting meant pypdf had already decoded a whole page by the time the limit
-fired: a 395 KB document declaring 300 images at 600×600 peaked at **283 MB** of resident memory
-before refusing. It now peaks at 13 MB.
+`max_images` is counted from the page resource dictionaries before this project decodes anything.
+Checking it while collecting meant a whole page of XObjects had already been decoded by the time
+the limit fired: a 395 KB document declaring 300 images at 600×600 peaked at **283 MB** before
+refusing, and now peaks at 13 MB.
+
+**That bound is not complete.** pypdf decodes a page's *inline* images (`BI`/`ID`/`EI`) in order to
+list them, so a small document with 300 inline images still peaks at several hundred MB. `max_pages`
+(default 300) bounds how many pages can do that; the per-page exposure remains. See
+[TD-008](technical-debt.md) — recorded rather than claimed as solved.
 
 ## Identity and layout
 

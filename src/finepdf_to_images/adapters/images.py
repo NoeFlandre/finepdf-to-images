@@ -42,25 +42,42 @@ class ImageExtractor(Protocol):
 class PypdfImageExtractor:
     """The real extractor.
 
-    ``max_images`` is a bound, not a preference: a malformed or hostile PDF can declare an
-    enormous number of image XObjects, and this pilot has no reason to unpack thousands from one
-    document.
+    ``max_images`` and ``max_pages`` are bounds, not preferences: a malformed or hostile PDF can
+    declare an enormous number of images, and this pilot has no reason to unpack thousands from
+    one document.
+
+    Neither bound is complete. pypdf decodes a page's **inline** images (the ``BI``/``ID``/``EI``
+    operators) while merely listing that page's image names, so the work happens before any count
+    can be consulted. A small document carrying 300 flate-compressed 600x600 inline images peaks
+    at several hundred MB before the limit fires -- 307 MB and 383 MB in two measurements.
+    ``max_pages`` bounds how many pages can do that; bounding a single page would mean replacing
+    pypdf's content-stream parser. See TD-008.
     """
 
     max_images: int = 200
+    #: Pages are the unit of work that can be bounded cheaply, since each one is parsed whether or
+    #: not it turns out to contain images.
+    max_pages: int = 300
 
     def extract(self, pdf_bytes: bytes) -> list[ExtractedImage]:
         from pypdf import PdfReader
-        from pypdf.errors import PdfReadError, PdfStreamError
 
         if not pdf_bytes:
             raise ImageExtractionError("cannot extract images from an empty document")
 
         try:
             reader = PdfReader(io.BytesIO(pdf_bytes))
+            if len(reader.pages) > self.max_pages:
+                raise ImageExtractionError(
+                    f"document has more than {self.max_pages} pages; refusing to walk it"
+                )
             pages = list(reader.pages)
-        except (PdfReadError, PdfStreamError, ValueError, OSError) as error:
-            # Bounded and actionable: the caller gets the library's reason, not a traceback.
+        except ImageExtractionError:
+            raise
+        except Exception as error:
+            # Deliberately broad, and bounded and actionable: the caller gets the library's
+            # reason, not a traceback. pypdf raises DependencyError for missing external decoders,
+            # which inherits from nothing PDF-specific.
             raise ImageExtractionError(
                 f"unreadable pdf: {type(error).__name__}: {error}"
             ) from error
@@ -85,12 +102,17 @@ class PypdfImageExtractor:
         return images
 
     def _refuse_if_too_many(self, pages: list[Any]) -> None:
-        """Count declared images *before* decoding any of them.
+        """Count declared images before decoding any of them **through our own code path**.
 
-        The count used to be checked while appending, which meant pypdf had already decoded a
-        whole page by the time the limit was noticed. A 395 KB document declaring 300 images at
-        600x600 peaked at 283 MB of resident memory before the bound fired -- so the bound did not
-        bound anything. ``keys()`` reads the resource dictionary without touching the streams.
+        The count used to be checked while appending, which meant a whole page of XObjects had
+        been decoded by the time the limit was noticed: a 395 KB document declaring 300 images at
+        600x600 peaked at 283 MB before the bound fired. Counting first fixes that for XObjects.
+
+        It does **not** fix it for inline images. ``page.images.keys()`` calls pypdf's
+        ``_parse_images_from_content_stream``, which decodes every ``BI``/``ID``/``EI`` image on
+        the page in order to name it -- so a small document with 300 inline images still peaks at
+        several hundred MB. ``max_pages`` bounds how many pages can do that. Closing it properly
+        means not using pypdf's parser. Recorded as TD-008 rather than claimed as solved.
         """
         declared = 0
         for page_index, page in enumerate(pages):
@@ -173,12 +195,16 @@ def encoder_versions() -> dict[str, str]:
     builds: a wheel linked against zlib-ng produces different PNG bytes from one linked against
     plain zlib, for identical pixels. A run should say what produced it. See TD-007.
     """
-    import PIL
-    import pypdf
-    from PIL import features
-
-    return {
-        "pypdf": pypdf.__version__,
-        "pillow": PIL.__version__,
-        "pillow_zlib": str(features.version("zlib") or "unknown"),
-    }
+    versions = {"pypdf": "unavailable", "pillow": "unavailable", "pillow_zlib": "unavailable"}
+    try:
+        import PIL
+        import pypdf
+        from PIL import features
+    except ImportError:
+        # The stage can run on an injected extractor with neither library installed; a manifest
+        # should say so rather than refuse to be written.
+        return versions
+    versions["pypdf"] = pypdf.__version__
+    versions["pillow"] = PIL.__version__
+    versions["pillow_zlib"] = str(features.version("zlib") or "unknown")
+    return versions

@@ -392,7 +392,13 @@ def _pdf_bytes_for(record: Mapping[str, Any], pdf_root: pathlib.Path) -> bytes:
     if stored != expected:
         raise ImageExtractionError(f"path {stored!r} is not the content-addressed {expected!r}")
 
-    data = read_bytes(pdf_root / expected)
+    try:
+        data = read_bytes(pdf_root / expected)
+    except OSError as error:
+        # Re-raised without the absolute path: it would be published verbatim in documents.jsonl
+        # and folded into documents_digest, making the digest depend on where the run happened and
+        # leaking the operator's filesystem layout.
+        raise ImageExtractionError(f"{type(error).__name__} reading {expected}") from error
     actual = sha256_hex(data)
     if actual != digest:
         raise ImageExtractionError(f"stored pdf hashes to {actual}, not the recorded {digest}")

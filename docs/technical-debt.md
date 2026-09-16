@@ -110,3 +110,29 @@ file; vendoring an encoder is disproportionate for a pilot.
 or before the published dataset is regenerated on a different platform and the artifact paths
 change. If that matters more than file size, publish the original embedded streams and record the
 format per image.
+
+## TD-008 — inline images are decoded before they can be counted
+
+**State.** `max_images` is checked against the images a page *declares*, before this project decodes
+any of them. That bounds image XObjects. It does not bound **inline** images — the `BI`/`ID`/`EI`
+operators inside a content stream — because pypdf decodes each one in order to name it, inside the
+same call that lists a page's images. A hand-built **1.4 KB** document carrying 300 flate-compressed
+600×600 inline images peaks at roughly **300 MB** of resident memory before the limit fires. That is
+a decompression bomb, and the input size bound from the retrieval stage does not help.
+
+**What is done about it.** `max_pages` (default 300) bounds how many pages can do this, since each
+page is parsed whether or not it contains images. The per-page exposure remains.
+
+**Why it is not simply fixed.** Bounding a single page means not using pypdf's content-stream
+parser — either pre-scanning the raw stream for inline-image operators before handing the page over,
+or replacing the parser. Both are disproportionate for a pilot that fetches a few dozen public
+documents under a 25 MB cap.
+
+**How it was found.** An independent review measured it against the code that had just "fixed" the
+XObject case. The regression test written at that time asserted only that *our* decode path did not
+run, and could not observe decoding inside pypdf — it passed against the vulnerable code. That test
+now says so in its own docstring.
+
+**Trigger.** Before this stage is run over untrusted documents at scale, unattended, or anywhere a
+300 MB spike per document matters. A per-process memory limit would be a cheaper mitigation than
+replacing the parser.

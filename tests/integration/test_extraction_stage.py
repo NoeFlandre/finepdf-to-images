@@ -199,12 +199,14 @@ def test_a_document_declaring_too_many_images_is_refused() -> None:
         PypdfImageExtractor(max_images=1).extract(pdf("two-images.pdf"))
 
 
-def test_the_limit_fires_before_a_single_image_is_decoded(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """REGRESSION: the count was checked while appending, so pypdf had already decoded a whole
-    page before the bound was noticed. A 395 KB document declaring 300 images at 600x600 peaked at
-    283 MB of resident memory before refusing -- so the bound did not bound anything."""
+def test_the_limit_fires_before_our_own_decoding_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """REGRESSION: the count was checked while appending, so a whole page of XObjects had been
+    decoded before the bound was noticed -- 283 MB on a 395 KB document.
+
+    This asserts only that *our* decode path does not run. It cannot observe decoding inside
+    pypdf, which is exactly the remaining gap TD-008 records: an earlier version of this test was
+    read as proving the bound complete, and it never could.
+    """
     decoded: list[int] = []
 
     def spy(self: object, image: object, page_index: int, image_index: int) -> object:
@@ -215,6 +217,17 @@ def test_the_limit_fires_before_a_single_image_is_decoded(
     with pytest.raises(ImageExtractionError, match="refusing to unpack"):
         PypdfImageExtractor(max_images=1).extract(pdf("two-images.pdf"))
     assert decoded == []
+
+
+def test_a_document_with_too_many_pages_is_refused() -> None:
+    """Pages are the unit of work that *can* be bounded cheaply: each is parsed whether or not it
+    turns out to contain images, and an inline-image page decodes as it is listed."""
+    with pytest.raises(ImageExtractionError, match="more than 1 pages"):
+        PypdfImageExtractor(max_pages=1).extract(pdf("two-pages.pdf"))
+
+
+def test_the_page_bound_does_not_reject_an_ordinary_document() -> None:
+    assert len(PypdfImageExtractor(max_pages=2).extract(pdf("two-pages.pdf"))) == 4
 
 
 # --------------------------------------------------------------------------- the stage
