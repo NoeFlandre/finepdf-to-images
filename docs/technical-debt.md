@@ -24,13 +24,15 @@ errors. The alternative would be a second type checker in CI for no additional s
 **Trigger.** Re-evaluate the pin when `ty` reaches a stable release, or if a false positive forces
 a suppression that hides a genuine defect.
 
-## TD-003 — CI cannot block a merge without branch protection
+## TD-003 — branch protection does not include administrators
 
-**State.** The `CI` workflow runs the deterministic gates on every pull request, but `main` has no
-branch-protection rule, so a red gate does not actually prevent a merge.
+**State.** `main` requires `Deterministic quality gates`, `Docker smoke` and `Docs build` to pass,
+requires branches to be up to date, forbids force pushes and deletions, and requires linear
+history. It does **not** set `enforce_admins`, so a repository administrator can still merge past a
+red gate.
 
-**Why.** Enabling required status checks is a repository setting and needs an explicit human
-decision about which checks are required and whether administrators are included.
+**Why.** Locking administrators out of their own single-maintainer repository trades a real
+recovery path for a theoretical guarantee.
 
-**Trigger.** Mark `Deterministic quality gates`, `Docker smoke` and `Docs build` as required checks
-on `main`. Until then, treat the workflow as advisory and read it before merging.
+**Trigger.** Enable `enforce_admins` if a second maintainer joins, or if a red gate is ever merged
+past in practice.

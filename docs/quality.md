@@ -20,10 +20,10 @@ Gates available at bootstrap:
 | Smoke | `docker build -t finepdf-to-images . && docker run --rm finepdf-to-images --help` |
 
 Property tests, acceptance scenarios, coverage/CRAP and mutation testing are added with the
-pipeline issues they measure (#5). CI runs the deterministic subset on every pull request. Making a
-failing gate actually block a merge additionally requires branch protection with these checks
-marked required on `main`; that is a repository setting, not something this repository can assert
-about itself. Required CI never reaches the network, never downloads
+pipeline issues they measure (#5). CI runs the deterministic subset on every pull request, and
+`main` is protected: `Deterministic quality gates`, `Docker smoke` and `Docs build` are required
+status checks, branches must be up to date, history must stay linear, and force pushes and branch
+deletion are refused. A failing gate blocks the merge. Required CI never reaches the network, never downloads
 FinePDFs, and never needs a secret.
 
 Metrics are evidence, not design targets. The CRAP threshold is documented in `scripts/` when it
