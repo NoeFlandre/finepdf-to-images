@@ -161,6 +161,54 @@ def test_a_subsumed_form_is_absent_from_the_evidence() -> None:
     assert result.matched_terms == ("pasture management",)
 
 
+@pytest.mark.parametrize(
+    ("text", "expected_groups"),
+    [
+        ("Fish farming and dryland farming in the district.", ("farm_management", "fisheries")),
+        ("Drip irrigation, and irrigation more broadly.", ("irrigation",)),
+        ("Pasture management on the pasture beyond the ridge.", ("livestock",)),
+    ],
+)
+def test_a_short_form_survives_where_it_occurs_independently(
+    text: str, expected_groups: tuple[str, ...]
+) -> None:
+    """REGRESSION: subsumption was set-based, so `fish farming` appearing anywhere deleted the
+    standalone `farming` in "dryland farming" and erased a whole group of real evidence."""
+    assert score(text).matched_groups == expected_groups
+
+
+def test_matching_consumes_text_so_one_phrase_is_not_counted_twice() -> None:
+    result = score("Pasture management notes.")
+    assert result.matched_terms == ("pasture management",)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Commodity index weights: maize, soybean, sugarcane, wheat.",
+        "Futures on wheat, barley, sorghum and millet settled lower.",
+        "Menu: paddy, millet, sorghum and cassava dishes.",
+    ],
+)
+def test_a_bare_list_of_commodity_names_does_not_reach_the_depth_threshold(text: str) -> None:
+    """REGRESSION: four crop names cleared the depth rule, so a price list scored as agriculture."""
+    result = score(text)
+    assert result.concept_depth >= MIN_CONCEPTS_IN_ONE_GROUP
+    assert not result.relevant, result.evidence
+
+
+def test_depth_counts_once_a_practice_concept_joins_the_commodity_names() -> None:
+    result = score("Wheat, barley and sorghum cultivar trials.")
+    assert result.matched_groups == ("crops",)
+    assert result.relevant
+
+
+def test_agrochemical_classes_are_separate_concepts() -> None:
+    """A document covering herbicides and fungicides is two ideas, not one."""
+    result = score("Herbicide and fungicide residues were measured.")
+    assert set(result.evidence["farm_management"]) == {"fungicide", "herbicide"}
+
+
 def test_subsumption_keeps_genuinely_separate_phrases() -> None:
     result = score("Pasture management and drip irrigation on the same holding.")
     assert result.matched_terms == ("drip irrigation", "pasture management")

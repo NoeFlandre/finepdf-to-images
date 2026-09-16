@@ -93,6 +93,22 @@ class ScoringResult:
     relevant: int
 
 
+def _as_text(value: Any, field: str, position: int) -> str:
+    """Coerce a record field to text, refusing a type that is not one.
+
+    ``or ""`` alone only defends against falsy values: a row with ``{"text": 123}`` reached the
+    normalizer and raised a TypeError outside the CLI's handlers, so the user saw a traceback
+    instead of a diagnostic. A non-string here means the input file is not what it claims to be.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(
+            f"record {position}: expected {field} to be a string, got {type(value).__name__}"
+        )
+    return value
+
+
 def run_score(*, records: Sequence[Mapping[str, Any]], out_dir: pathlib.Path) -> ScoringResult:
     """Score already-selected records for agriculture relevance.
 
@@ -101,10 +117,11 @@ def run_score(*, records: Sequence[Mapping[str, Any]], out_dir: pathlib.Path) ->
     """
     rows: list[dict[str, Any]] = []
     relevant = 0
-    for record in records:
-        # `or ""` rather than a str() default: an explicit JSON null would otherwise be
-        # stringified into the literal "None" and published as a language code.
-        result = score_text(record.get("text") or "", language=record.get("language") or "")
+    for position, record in enumerate(records):
+        result = score_text(
+            _as_text(record.get("text"), "text", position),
+            language=_as_text(record.get("language"), "language", position),
+        )
         relevant += int(result.relevant)
         rows.append(
             {
@@ -120,9 +137,12 @@ def run_score(*, records: Sequence[Mapping[str, Any]], out_dir: pathlib.Path) ->
         "stage": "score",
         "vocabulary": vocabulary_summary(),
         "counts": {"scored": len(rows), "relevant": relevant},
-        # Both digests: without the input one, a scored.jsonl cannot be tied back to the selection
-        # that produced it, and the provenance chain has a gap exactly where it matters.
-        "input_digest": content_digest([dict(record) for record in records]),
+        # Deliberately computed over the records *without* their text, because that is the exact
+        # shape the select stage publishes as records_digest. Digesting a different shape would
+        # produce a number that matches nothing upstream -- a provenance link in name only.
+        "input_digest": content_digest(
+            [{key: value for key, value in record.items() if key != "text"} for record in records]
+        ),
         "scored_digest": content_digest(rows),
     }
     scored_path = write_bytes(out_dir / SCORED_NAME, canonical_jsonl(rows))

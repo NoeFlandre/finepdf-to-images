@@ -130,6 +130,43 @@ def test_the_manifest_ties_the_output_to_the_input_that_produced_it(
     )
 
 
+def test_the_input_digest_equals_the_select_stage_records_digest(tmp_path: pathlib.Path) -> None:
+    """REGRESSION: the two digests were computed over different shapes, so input_digest matched
+    nothing the select stage ever published -- a provenance link in name only."""
+    selection = run_select(
+        reader=LocalShardReader(root=FIXTURE_ROOT),
+        ref=SourceRef(),
+        spec=SamplingSpec(limit=20),
+        out_dir=tmp_path / "select",
+    )
+    scoring = run_score(records=read_jsonl(selection.records_path), out_dir=tmp_path / "score")
+    assert scoring.manifest["input_digest"] == selection.manifest["records_digest"]
+
+
+@pytest.mark.parametrize("value", [123, 1.5, [], {}, True])
+def test_a_non_string_text_field_is_refused_not_crashed_on(
+    value: object, tmp_path: pathlib.Path
+) -> None:
+    """REGRESSION: `or ""` only defended against falsy values, so {"text": 123} reached the
+    normalizer and raised a TypeError outside the CLI's handlers."""
+    with pytest.raises(ValueError, match="expected text to be a string"):
+        run_score(records=[{"row_index": 0, "text": value}], out_dir=tmp_path)
+
+
+def test_a_non_string_language_field_is_refused(tmp_path: pathlib.Path) -> None:
+    with pytest.raises(ValueError, match="expected language to be a string"):
+        run_score(records=[{"row_index": 0, "language": ["eng_Latn"]}], out_dir=tmp_path)
+
+
+def test_cli_reports_a_bad_field_type_as_a_failure(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "bad.jsonl"
+    path.write_text('{"row_index":0,"text":123}\n', encoding="utf-8")
+    assert run_cli(["score", "--records", str(path), "--out", str(tmp_path / "o")]) == EXIT_FAILURE
+    assert "expected text to be a string" in capsys.readouterr().err
+
+
 def test_a_jsonl_line_that_is_not_an_object_is_refused(tmp_path: pathlib.Path) -> None:
     """REGRESSION: a bare array reached record.get() and raised AttributeError past the CLI."""
     path = tmp_path / "bad.jsonl"

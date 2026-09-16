@@ -32,13 +32,31 @@ document is relevant when it matches
 `score` is the number of distinct groups matched. Two rather than one, because one group is exactly
 what an incidental mention looks like.
 
-### Subsumption
+### Matching consumes text
 
-A matched term contained in a longer matched term is dropped before the groups are counted.
-Without it, **one phrase satisfies the breadth rule on its own**: *"Pasture management notes"*
-matched both `pasture` and `pasture management`, and *"Fish farming"* matched `farming` in farm
-management as well as `fish farming` in fisheries — two groups from a single phrase, which is
-exactly what `MIN_GROUPS` exists to prevent.
+Forms are matched **longest phrase first**, and each match's span is claimed so shorter forms
+cannot re-match the same text.
+
+Without it, one phrase satisfies the breadth rule on its own: *"Pasture management notes"* matched
+both `pasture` and `pasture management`, and *"Fish farming"* matched `farming` in farm management
+as well as `fish farming` in fisheries — two groups from a single phrase, which is exactly what
+`MIN_GROUPS` exists to prevent.
+
+The consumption is **per occurrence, not per form**. A set-based "drop anything contained in a
+longer match" rule erases real evidence: in *"Fish farming and dryland farming in the district"*,
+`farming` occurs standalone, so farm management is genuine evidence and the document is relevant.
+
+### Weak concepts
+
+Depth requires at least one concept that is **not a bare commodity name**. A list of crop or
+species names is good *breadth* evidence but is not by itself a document about agriculture:
+
+- *"Commodity index weights: maize, soybean, sugarcane, wheat"* — four concepts deep, and a
+  finance document. **Not relevant.**
+- *"Wheat, barley and sorghum cultivar trials"* — the same crop names plus a practice concept.
+  **Relevant.**
+
+`WEAK_CONCEPTS` lists them, and the run manifest carries it.
 
 ## Matching
 
@@ -109,14 +127,31 @@ anyway, so the mismatch is visible in the output instead of hidden in a branch.
 No model download, no embedding, no opaque classifier. That is a deliberate limit of the first POC,
 not a claim that keywords are better.
 
-A keyword filter has a real ceiling. It cannot recognise a document about agriculture that never
-uses the vocabulary, and it will flag one that merely mentions farming in passing. A real example
-from the pinned shard: a **colonoscopy preparation diet sheet** scored relevant on `barley`,
-`poultry` and `shellfish` — three groups, all food context. Excluding every term with a food sense
-would gut the crop vocabulary, so this one is accepted and documented rather than patched away.
+A keyword filter has a real ceiling. These are the known failures, kept here rather than patched
+away, because every patch costs genuine coverage:
 
-Both failure modes are visible in the evidence, which is the point: `matched_terms` on that row
-says exactly why it was kept, so a reviewer can disagree in one glance.
+**False positives**
+
+- A **colonoscopy preparation diet sheet** from the pinned shard scored relevant on `barley`,
+  `poultry` and `shellfish` — three groups, all food context. Excluding every term with a food
+  sense would gut the crop vocabulary.
+- **Veterinary and toxicology text**: *"Bacterial culture from the wound; pesticide poisoning.
+  Veterinary referral."* scores relevant. `veterinary` and `pesticide` are ordinary clinical words.
+- A **contrived menu using agricultural practice language** (*"Sowing season menu: paddy rice,
+  millet porridge…"*) clears the depth rule, because `sowing` really is a practice term.
+
+**False negatives**
+
+- *"Poultry broiler houses and swine piggery biosecurity on the farm."* is genuine agriculture and
+  scores **not relevant** — one group, and `farm` is excluded because of "server farm" and "farm
+  out". That trade is deliberate: `farm` produced more software false positives than agricultural
+  true positives.
+
+**Deliberately in scope, not a false positive**: forestry and fisheries are groups in their own
+right, so a pure-ecology document about deforestation, afforestation and soil erosion *is* kept.
+
+Every one of these is visible in the evidence, which is the point: `matched_terms` says exactly why
+a row was kept, so a reviewer can disagree in one glance.
 
 ### Observed rate
 

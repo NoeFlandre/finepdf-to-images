@@ -33,7 +33,7 @@ VOCABULARY_LANGUAGE = "eng_Latn"
 
 #: Bumped whenever the vocabulary or the thresholds change, so an earlier run's output stays
 #: interpretable instead of being silently reinterpreted under new rules.
-VOCABULARY_VERSION = 2
+VOCABULARY_VERSION = 3
 
 #: ``group -> concept -> surface forms``. Terms match as whole words or whole phrases after
 #: normalization, never as substrings — otherwise "wheat" matches "wheaten" and "goat" matches
@@ -141,7 +141,10 @@ VOCABULARY: Mapping[str, Mapping[str, frozenset[str]]] = {
         "farming": frozenset({"farming", "farmer", "farmers", "farmland", "smallholder farming"}),
         "food_security": frozenset({"food security"}),
         "pest_management": frozenset({"pest management", "integrated pest management"}),
-        "pesticide": frozenset({"pesticide", "pesticides", "herbicide", "herbicides", "fungicide"}),
+        "fungicide": frozenset({"fungicide", "fungicides"}),
+        "herbicide": frozenset({"herbicide", "herbicides"}),
+        "insecticide": frozenset({"insecticide", "insecticides"}),
+        "pesticide": frozenset({"pesticide", "pesticides"}),
         "smallholder": frozenset({"smallholder", "smallholders"}),
     },
 }
@@ -170,13 +173,39 @@ EXCLUDED_AMBIGUOUS_TERMS: Mapping[str, str] = {
     "yield": "finance, materials science",
 }
 
+#: Concepts that are bare commodity or species names. They are perfectly good *breadth* evidence,
+#: but a list of them is not by itself a document about agriculture: "Commodity index weights:
+#: maize, soybean, sugarcane, wheat" is a finance document, and a menu naming four grains is a
+#: menu. The depth rule therefore requires at least one concept that is a practice, an input or a
+#: management idea.
+WEAK_CONCEPTS: Mapping[str, frozenset[str]] = {
+    "crops": frozenset(
+        {
+            "barley",
+            "cassava",
+            "legume",
+            "maize",
+            "millet",
+            "oilseed",
+            "paddy",
+            "sorghum",
+            "soybean",
+            "sugarcane",
+            "wheat",
+        }
+    ),
+    "livestock": frozenset({"cattle", "goat", "poultry", "ruminant", "swine"}),
+    "fisheries": frozenset({"shellfish", "trawler"}),
+}
+
 #: A document matching this many distinct concept **groups** is relevant. Two rather than one,
 #: because a single group is exactly what an incidental mention looks like.
 MIN_GROUPS = 2
 
-#: ...or this many distinct **concepts** within a single group, which catches a narrowly focused
-#: document (a wheat agronomy paper) that a breadth rule alone would miss. Concepts, not surface
-#: forms: "farmer", "farmers" and "farming" are one concept mentioned three times.
+#: ...or this many distinct **concepts** within a single group, at least one of which is not a bare
+#: commodity name (see :data:`WEAK_CONCEPTS`). This catches a narrowly focused document -- a wheat
+#: agronomy paper -- that a breadth rule alone would miss, without admitting a price list. Concepts,
+#: not surface forms: "farmer", "farmers" and "farming" are one concept mentioned three times.
 MIN_CONCEPTS_IN_ONE_GROUP = 3
 
 #: ``\w`` includes the underscore and digits, so ``[^\w]+`` left "soil_moisture" glued together and
@@ -220,30 +249,40 @@ def normalize(text: str) -> str:
     return f" {_NON_WORD.sub(' ', folded).strip()} "
 
 
+#: Every surface form, longest first, so the longest phrase at a given position wins. Ties break
+#: alphabetically to keep the scan deterministic.
+_FORMS_LONGEST_FIRST: tuple[str, ...] = tuple(
+    sorted(
+        {form for concepts in VOCABULARY.values() for forms in concepts.values() for form in forms},
+        key=lambda form: (-len(form), form),
+    )
+)
+
+#: Stands in for text already claimed by a longer phrase. A character that cannot survive
+#: :func:`normalize`, so it can never collide with real content.
+_CLAIMED = "\x00"
+
+
 def _matched_forms(normalized: str) -> set[str]:
-    """Every vocabulary surface form present in the text as a whole word or phrase."""
-    return {
-        form
-        for concepts in VOCABULARY.values()
-        for forms in concepts.values()
-        for form in forms
-        if f" {form} " in normalized
-    }
+    """Every vocabulary surface form the text contains, matched longest phrase first.
 
+    Matching consumes text. Each form's occurrences are replaced with a placeholder before shorter
+    forms are tried, so a short form is suppressed only where a longer one actually covered it —
+    not merely because the longer one appeared somewhere else in the document.
 
-def _drop_subsumed(forms: set[str]) -> set[str]:
-    """Remove any matched form contained in a longer matched form.
-
-    Without this, one phrase satisfies the breadth rule on its own: "Pasture management notes"
-    matched both ``pasture`` and ``pasture management``, and "Fish farming" matched ``farming`` in
-    farm management as well as ``fish farming`` in fisheries — two groups from a single phrase,
-    which is exactly what MIN_GROUPS exists to prevent.
+    That distinction is the whole point. A set-based "drop anything contained in a longer match"
+    rule erased real evidence: in "Fish farming and dryland farming in the district", ``farming``
+    occurs standalone, but the presence of ``fish farming`` elsewhere deleted the farm-management
+    group entirely and the document scored as not relevant.
     """
-    return {
-        form
-        for form in forms
-        if not any(other != form and f" {form} " in f" {other} " for other in forms)
-    }
+    working = normalized
+    matched: set[str] = set()
+    for form in _FORMS_LONGEST_FIRST:
+        needle = f" {form} "
+        if needle in working:
+            matched.add(form)
+            working = working.replace(needle, f" {_CLAIMED} ")
+    return matched
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -299,7 +338,7 @@ def score(text: str, language: str = VOCABULARY_LANGUAGE) -> RelevanceResult:
     :data:`MIN_CONCEPTS_IN_ONE_GROUP` distinct concepts inside a single group — the first rule
     catches breadth, the second catches a narrowly focused document that breadth alone would miss.
     """
-    surviving = _drop_subsumed(_matched_forms(normalize(text)))
+    surviving = _matched_forms(normalize(text))
 
     evidence: dict[str, dict[str, tuple[str, ...]]] = {}
     for group in sorted(VOCABULARY):
@@ -313,7 +352,12 @@ def score(text: str, language: str = VOCABULARY_LANGUAGE) -> RelevanceResult:
 
     groups = tuple(sorted(evidence))
     depth = max((len(concepts) for concepts in evidence.values()), default=0)
-    relevant = len(groups) >= MIN_GROUPS or depth >= MIN_CONCEPTS_IN_ONE_GROUP
+    deep_enough = any(
+        len(concepts) >= MIN_CONCEPTS_IN_ONE_GROUP
+        and not set(concepts).issubset(WEAK_CONCEPTS.get(group, frozenset()))
+        for group, concepts in evidence.items()
+    )
+    relevant = len(groups) >= MIN_GROUPS or deep_enough
 
     return RelevanceResult(
         relevant=relevant,
@@ -343,5 +387,6 @@ def vocabulary_summary() -> dict[str, Any]:
             "min_groups": MIN_GROUPS,
             "min_concepts_in_one_group": MIN_CONCEPTS_IN_ONE_GROUP,
         },
+        "weak_concepts": {group: sorted(c) for group, c in sorted(WEAK_CONCEPTS.items())},
         "excluded_ambiguous_terms": dict(sorted(EXCLUDED_AMBIGUOUS_TERMS.items())),
     }
