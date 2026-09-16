@@ -26,6 +26,36 @@ pytestmark = pytest.mark.integration
 
 PDF_DIR = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "pdfs"
 
+#: Pinned expected output: (sha256, width, height, byte_size, mime) per image, in document order.
+#:
+#: These are the actual published artifact bytes. The fixtures store raw FlateDecode samples and
+#: pypdf/Pillow re-encode them to PNG, so the artifact's identity is a function of those two
+#: libraries -- which is exactly why they are pinned exactly in pyproject.toml and why these hashes
+#: are written down. Without them a Pillow bump would silently change every image sha256, every
+#: content-addressed path and the manifest digest, and no test would notice.
+#:
+#: If one of these fails after a dependency bump, that is the test working. Re-pin deliberately.
+GOLDEN_IMAGES: dict[str, list[tuple[str, int, int, int, str]]] = {
+    "two-images.pdf": [
+        ("de33ddc09a0ba9b83128b6b59461e3be59299575eb68ccf2c03984b504f9fa9c", 2, 2, 73, "image/png"),
+        ("4aa84276a014c44690507ec04ee57a2569d07e0310ad1fc6b09f0e71db48495c", 3, 2, 77, "image/png"),
+    ],
+    "duplicate-images.pdf": [
+        ("21a452d2648c566eefa2cc56e9bb27ed9975e4403e34183ed629351af6f2bb42", 2, 2, 76, "image/png"),
+        ("21a452d2648c566eefa2cc56e9bb27ed9975e4403e34183ed629351af6f2bb42", 2, 2, 76, "image/png"),
+    ],
+    "rotated-page.pdf": [
+        ("de33ddc09a0ba9b83128b6b59461e3be59299575eb68ccf2c03984b504f9fa9c", 2, 2, 73, "image/png"),
+        ("4aa84276a014c44690507ec04ee57a2569d07e0310ad1fc6b09f0e71db48495c", 3, 2, 77, "image/png"),
+    ],
+    "two-pages.pdf": [
+        ("de33ddc09a0ba9b83128b6b59461e3be59299575eb68ccf2c03984b504f9fa9c", 2, 2, 73, "image/png"),
+        ("4aa84276a014c44690507ec04ee57a2569d07e0310ad1fc6b09f0e71db48495c", 3, 2, 77, "image/png"),
+        ("de33ddc09a0ba9b83128b6b59461e3be59299575eb68ccf2c03984b504f9fa9c", 2, 2, 73, "image/png"),
+        ("4aa84276a014c44690507ec04ee57a2569d07e0310ad1fc6b09f0e71db48495c", 3, 2, 77, "image/png"),
+    ],
+}
+
 
 def pdf(name: str) -> bytes:
     return (PDF_DIR / name).read_bytes()
@@ -51,10 +81,36 @@ def test_a_pdf_with_two_images_yields_two_deterministic_artifacts(
     assert images[0].data != images[1].data
 
 
+@pytest.mark.parametrize("name", sorted(GOLDEN_IMAGES))
+def test_extracted_bytes_match_their_pinned_hashes(
+    extractor: PypdfImageExtractor, name: str
+) -> None:
+    """REGRESSION: the determinism tests only compared two runs in the same process, so a Pillow
+    bump would have changed every published sha256 without failing anything."""
+    actual = [
+        (sha256_hex(i.data), i.width, i.height, len(i.data), i.mime)
+        for i in extractor.extract(pdf(name))
+    ]
+    assert actual == GOLDEN_IMAGES[name]
+
+
 def test_extraction_is_byte_identical_across_runs(extractor: PypdfImageExtractor) -> None:
     first = extractor.extract(pdf("two-images.pdf"))
     second = extractor.extract(pdf("two-images.pdf"))
     assert [i.data for i in first] == [i.data for i in second]
+
+
+def test_dimensions_come_from_the_decoded_image_not_the_declared_ones(
+    extractor: PypdfImageExtractor,
+) -> None:
+    """The docs claim the manifest records what the artifact *is*, not what the PDF claims."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    for image in extractor.extract(pdf("two-images.pdf")):
+        with Image.open(BytesIO(image.data)) as decoded:
+            assert (image.width, image.height) == decoded.size
 
 
 def test_a_pdf_without_images_is_a_zero_image_success(extractor: PypdfImageExtractor) -> None:
@@ -131,6 +187,24 @@ def test_a_document_declaring_too_many_images_is_refused() -> None:
         PypdfImageExtractor(max_images=1).extract(pdf("two-images.pdf"))
 
 
+def test_the_limit_fires_before_a_single_image_is_decoded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """REGRESSION: the count was checked while appending, so pypdf had already decoded a whole
+    page before the bound was noticed. A 395 KB document declaring 300 images at 600x600 peaked at
+    283 MB of resident memory before refusing -- so the bound did not bound anything."""
+    decoded: list[int] = []
+
+    def spy(self: object, image: object, page_index: int, image_index: int) -> object:
+        decoded.append(1)
+        raise AssertionError("no image may be decoded once the limit is known to be exceeded")
+
+    monkeypatch.setattr(PypdfImageExtractor, "_describe", spy)
+    with pytest.raises(ImageExtractionError, match="refusing to unpack"):
+        PypdfImageExtractor(max_images=1).extract(pdf("two-images.pdf"))
+    assert decoded == []
+
+
 # --------------------------------------------------------------------------- the stage
 
 
@@ -197,7 +271,7 @@ def test_identical_images_are_stored_once_with_stable_references(
     assert len(rows) == 2
     assert rows[0]["sha256"] == rows[1]["sha256"]
     assert rows[0]["duplicate_of"] is None
-    assert rows[1]["duplicate_of"] == rows[0]["document_row_id"] + "#0.0"
+    assert rows[1]["duplicate_of"] == rows[0]["pdf_sha256"] + "#0.0"
     assert len(list((out / "images").rglob("*.png"))) == 1
     assert result.unique_images == 1
     assert result.images == 2

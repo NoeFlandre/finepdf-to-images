@@ -30,6 +30,19 @@ pages, and each occurrence gets its own record pointing at one shared artifact.
 Dimensions come from the **decoded image**, not from the PDF's `/Width` and `/Height` entries.
 Those are what the document claims; a manifest should record what the artifact actually is.
 
+## Input safety
+
+The stored path must be **exactly** the content-addressed path the digest implies, and the bytes
+read must hash back to that digest. Without the first check a hand-edited `retrieved.jsonl` naming
+`../secret.pdf` — or an absolute path, which `pathlib` resolves by discarding the root entirely —
+would read arbitrary files and publish the images inside them. The second catches a corrupted or
+swapped artifact rather than indexing it under a false identity.
+
+`max_images` is counted from the page resource dictionaries **before any image is decoded**.
+Checking it while collecting meant pypdf had already decoded a whole page by the time the limit
+fired: a 395 KB document declaring 300 images at 600×600 peaked at **283 MB** of resident memory
+before refusing. It now peaks at 13 MB.
+
 ## Identity and layout
 
 `images/<aa>/<bb>/<sha256>.<ext>`, sharded so no directory grows without bound. Deduplication is by
@@ -45,6 +58,11 @@ evidence, the same reasoning as the PDF header check in [retrieval](retrieval.md
 Document, then page, then position on the page. All three come from the PDF itself, so this is the
 document's own order rather than an arbitrary one, and two runs over the same input produce the
 same manifest bytes.
+
+Which occurrence of a repeated image is recorded as the original depends on the order of the input
+records. The artifact is content-addressed, so only the `duplicate_of` pointer moves — and it
+references `<pdf_sha256>#<page>.<index>`, not a row id, because a row id can be empty or repeated
+across documents.
 
 ## Failures
 
@@ -89,3 +107,14 @@ malformed bytes, and a truncated file.
 ```bash
 uv run python tests/fixtures/build_pdf_fixtures.py
 ```
+
+### Pinned hashes
+
+The fixtures store raw `FlateDecode` samples, and **pypdf and Pillow re-encode them to PNG** — so
+the published artifact's bytes, its `sha256`, its content-addressed path and the manifest digest are
+all a function of those two libraries. They are therefore pinned to exact versions in
+`pyproject.toml`, and the expected hashes are written down in `GOLDEN_IMAGES`.
+
+Without that, a Pillow bump would silently change every image in the dataset and no test would
+notice. If one of those hashes fails after a dependency bump, the test is working; re-pin
+deliberately.

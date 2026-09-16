@@ -27,13 +27,19 @@ from finepdf_to_images.domain.retrieval import (
     RetrievalLimits,
     RetrievalRecord,
     UnsafeUrlError,
+    artifact_path,
     validate_url,
 )
 from finepdf_to_images.domain.retrieval import evaluate as evaluate_response
 from finepdf_to_images.domain.retrieval import failure as retrieval_failure
 from finepdf_to_images.domain.scoring import score as score_text
 from finepdf_to_images.domain.scoring import vocabulary_summary
-from finepdf_to_images.domain.serialization import canonical_bytes, canonical_jsonl, content_digest
+from finepdf_to_images.domain.serialization import (
+    canonical_bytes,
+    canonical_jsonl,
+    content_digest,
+    sha256_hex,
+)
 from finepdf_to_images.domain.source import (
     SELECTED_COLUMNS,
     SamplingSpec,
@@ -366,11 +372,38 @@ class ExtractionResult:
     failed: int
 
 
+def _pdf_bytes_for(record: Mapping[str, Any], pdf_root: pathlib.Path) -> bytes:
+    """Read one retrieved PDF, refusing anything that is not where the retrieve stage put it.
+
+    The stored path must be exactly the content-addressed path the digest implies. Without that
+    check a hand-edited retrieved.jsonl could name ``../secret.pdf`` or an absolute path -- and
+    ``pathlib`` discards the root entirely when a part is absolute -- so the stage would read
+    arbitrary files and publish the images inside them. Every other stage validates its input
+    reference; this one was the exception.
+
+    The bytes are then verified against the digest, so a corrupted or swapped artifact is caught
+    rather than silently indexed under the wrong identity.
+    """
+    digest = record.get("sha256")
+    stored = record.get("path")
+    if not isinstance(digest, str) or not isinstance(stored, str):
+        raise ImageExtractionError("record has no usable sha256 and path")
+    expected = artifact_path(digest)
+    if stored != expected:
+        raise ImageExtractionError(f"path {stored!r} is not the content-addressed {expected!r}")
+
+    data = read_bytes(pdf_root / expected)
+    actual = sha256_hex(data)
+    if actual != digest:
+        raise ImageExtractionError(f"stored pdf hashes to {actual}, not the recorded {digest}")
+    return data
+
+
 def _extract_one(
     *,
     extractor: ImageExtractor,
     record: Mapping[str, Any],
-    pdf_bytes: bytes,
+    pdf_root: pathlib.Path,
 ) -> tuple[list[ImageRecord], dict[tuple[int, int], bytes], str]:
     """Extract one document's images, or return the reason it could not be done.
 
@@ -380,10 +413,11 @@ def _extract_one(
     document once per picture.
     """
     row_id = str(record.get("row_id") or "")
-    row_index = int(record.get("row_index") or 0)
     pdf_sha256 = str(record.get("sha256") or "")
 
     try:
+        row_index = int(record.get("row_index") or 0)
+        pdf_bytes = _pdf_bytes_for(record, pdf_root)
         extracted = extractor.extract(pdf_bytes)
         records = [
             build_image_record(
@@ -403,6 +437,15 @@ def _extract_one(
         # A malformed document fails with a diagnostic and contributes nothing. Partial output
         # from a document we could not read would be worse than none.
         return [], {}, str(error)
+    except (OSError, ValueError, TypeError) as error:
+        # A missing file, a non-string path, a non-numeric row index. These used to escape
+        # run_extract entirely -- and because the manifest is written after the loop, one bad row
+        # lost every document already extracted. "One failure never stops the others" has to be
+        # true, not just documented.
+        return [], {}, f"{type(error).__name__}: {error}"
+    except Exception as error:
+        # A third-party ImageExtractor is not obliged to raise only ImageExtractionError.
+        return [], {}, f"{type(error).__name__}: {error}"
     return records, {(i.page_index, i.image_index): i.data for i in extracted}, ""
 
 
@@ -420,7 +463,9 @@ def run_extract(
     success, not a failure -- most PDFs on the open web genuinely contain none.
 
     Images are deduplicated by content across the whole run, so the same logo on forty pages is one
-    artifact with forty references.
+    artifact with forty references. Which occurrence is recorded as the original depends on the
+    order of ``records``; the artifact itself is content-addressed, so only the ``duplicate_of``
+    pointer moves.
     """
     image_rows: list[dict[str, Any]] = []
     document_rows: list[dict[str, Any]] = []
@@ -431,9 +476,8 @@ def run_extract(
     for record in records:
         if not record.get("ok") or not record.get("path"):
             continue
-        pdf_bytes = read_bytes(pdf_root / str(record["path"]))
         images, payloads, error = _extract_one(
-            extractor=extractor, record=record, pdf_bytes=pdf_bytes
+            extractor=extractor, record=record, pdf_root=pdf_root
         )
 
         document_rows.append(
@@ -459,9 +503,9 @@ def run_extract(
             if image.sha256 in seen:
                 entry["duplicate_of"] = seen[image.sha256]
             else:
-                seen[image.sha256] = (
-                    f"{image.document_row_id}#{image.page_index}.{image.image_index}"
-                )
+                # Keyed on the PDF's digest, not its row id: a row id can be empty or repeated
+                # across documents, and then the reference points at nothing resolvable.
+                seen[image.sha256] = f"{image.pdf_sha256}#{image.page_index}.{image.image_index}"
                 write_bytes(out_dir / image.path, payloads[(image.page_index, image.image_index)])
             image_rows.append(entry)
 

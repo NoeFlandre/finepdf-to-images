@@ -27,8 +27,9 @@ addressed and deduplicated across the run.
 - `pypdf` and `Pillow` become runtime dependencies. Pillow is what gives real dimensions and format
   rather than the document's claims; both are on the domain's forbidden-import list, so they stay
   in the adapter.
-- Extraction output depends on those two libraries' decoding, so the lockfile is part of the
-  reproducibility story. The PDF fixtures are hand-written precisely so that a library bump shows
-  up as a test failure rather than as a silently different dataset.
+- Extraction output depends on those two libraries' decoding, so both are pinned to **exact**
+  versions rather than floors, and the expected image hashes are written down in the tests. The
+  hand-written PDF fixtures alone were not enough: they store raw samples that Pillow re-encodes,
+  so without pinned hashes a Pillow bump would have changed every published artifact silently.
 - Adding rendering or OCR later is a new adapter behind the same `ImageExtractor` protocol, not a
   rewrite.

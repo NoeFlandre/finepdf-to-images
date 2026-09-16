@@ -78,9 +78,9 @@ docs = [
 requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "huggingface-hub", specifier = ">=0.28" },
-    { name = "pillow", specifier = ">=12.3.0" },
+    { name = "pillow", specifier = "==12.3.0" },
     { name = "pyarrow", specifier = ">=25.0.1" },
-    { name = "pypdf", specifier = ">=6.19.0" },
+    { name = "pypdf", specifier = "==6.19.0" },
 ]
 
 [package.metadata.requires-dev]

@@ -77,15 +77,33 @@ class PypdfImageExtractor:
             ) from error
 
     def _walk(self, pages: list[Any]) -> list[ExtractedImage]:
+        self._refuse_if_too_many(pages)
         images: list[ExtractedImage] = []
         for page_index, page in enumerate(pages):
             for image_index, image in enumerate(self._page_images(page, page_index)):
-                if len(images) >= self.max_images:
-                    raise ImageExtractionError(
-                        f"document declares more than {self.max_images} images; refusing to unpack"
-                    )
                 images.append(self._describe(image, page_index, image_index))
         return images
+
+    def _refuse_if_too_many(self, pages: list[Any]) -> None:
+        """Count declared images *before* decoding any of them.
+
+        The count used to be checked while appending, which meant pypdf had already decoded a
+        whole page by the time the limit was noticed. A 395 KB document declaring 300 images at
+        600x600 peaked at 283 MB of resident memory before the bound fired -- so the bound did not
+        bound anything. ``keys()`` reads the resource dictionary without touching the streams.
+        """
+        declared = 0
+        for page_index, page in enumerate(pages):
+            try:
+                declared += len(list(page.images.keys()))
+            except Exception as error:
+                raise ImageExtractionError(
+                    f"page {page_index} resources unreadable: {type(error).__name__}: {error}"
+                ) from error
+            if declared > self.max_images:
+                raise ImageExtractionError(
+                    f"document declares more than {self.max_images} images; refusing to unpack"
+                )
 
     def _page_images(self, page: Any, page_index: int) -> list[Any]:
         """Every image on one page, or a diagnostic.
