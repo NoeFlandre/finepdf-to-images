@@ -25,10 +25,18 @@ from finepdf_to_images.domain.source import (
 
 @dataclass(frozen=True, slots=True)
 class ShardWindow:
-    """The bounded slice of a shard that was actually read."""
+    """The bounded slice of a shard that was actually read.
+
+    ``rows_fetched`` and ``row_groups_read`` describe the **fetch**, not the request. They are what
+    a reviewer needs to audit the bounded-read claim, and they are what the tests assert on: a
+    reader that pulled every row group and sliced at the end would pass a length check but not
+    these.
+    """
 
     rows: list[dict[str, Any]]
     rows_per_row_group: int
+    rows_fetched: int
+    row_groups_read: int
     total_rows: int
     total_row_groups: int
 
@@ -63,15 +71,19 @@ def _read_bounded(open_file: Any, *, max_rows: int, columns: Sequence[str]) -> S
 
     rows: list[dict[str, Any]] = []
     rows_per_row_group = metadata.row_group(0).num_rows if metadata.num_row_groups else 0
+    groups_read = 0
     for group in range(metadata.num_row_groups):
         table = parquet.read_row_group(group, columns=list(columns))
         rows.extend(table.to_pylist())
+        groups_read += 1
         if len(rows) >= max_rows:
             break
 
     return ShardWindow(
         rows=rows[:max_rows],
         rows_per_row_group=rows_per_row_group,
+        rows_fetched=len(rows),
+        row_groups_read=groups_read,
         total_rows=metadata.num_rows,
         total_row_groups=metadata.num_row_groups,
     )
@@ -89,14 +101,17 @@ class HuggingFaceShardReader:
     ) -> ShardWindow:
         from huggingface_hub import HfFileSystem
 
+        # ref validated every component of this path at construction time, including the dataset
+        # id, so nothing here can redirect the read at another repository.
         remote = f"datasets/{ref.dataset}@{ref.revision}/{ref.path}"
-        filesystem = HfFileSystem()
-        if not filesystem.exists(remote):
+        try:
+            handle = HfFileSystem().open(remote, "rb")
+        except FileNotFoundError as error:
             raise SourceConfigurationError(
                 f"shard {ref.path!r} does not exist at {ref.dataset}@{ref.revision}. "
                 "Refusing to fall back to another shard or to the full dataset."
-            )
-        with filesystem.open(remote, "rb") as handle:
+            ) from error
+        with handle:
             return _read_bounded(handle, max_rows=max_rows, columns=columns)
 
 

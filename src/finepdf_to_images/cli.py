@@ -65,7 +65,7 @@ def _cmd_select(args: argparse.Namespace) -> int:
     print(f"source     {ref.dataset}@{ref.revision}")
     print(f"shard      {ref.path}")
     print(f"sampling   limit={spec.limit} strategy={spec.strategy} seed={spec.seed}")
-    print(f"rows read  {result.rows_read}")
+    print(f"fetched    {result.rows_fetched} rows in {result.row_groups_read} row group(s)")
     print(f"selected   {result.selected}")
     print(f"manifest   {result.manifest_path}")
     print(f"records    {result.records_path}")
@@ -143,7 +143,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         # answered by widening the read.
         print(f"{PROG}: {error}", file=sys.stderr)
         raise SystemExit(EXIT_USAGE) from error
-    except OSError as error:
+    except (OSError, ValueError) as error:
+        # ValueError covers pyarrow's ArrowInvalid, so a corrupt or truncated shard fails with a
+        # diagnostic instead of a traceback. SourceConfigurationError is handled above.
         print(f"{PROG}: {error}", file=sys.stderr)
         raise SystemExit(EXIT_FAILURE) from error
     raise SystemExit(code)

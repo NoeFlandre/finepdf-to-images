@@ -12,6 +12,7 @@ from finepdf_to_images.domain.serialization import canonical_bytes
 from finepdf_to_images.domain.source import (
     DEFAULT_LIMIT,
     DEFAULT_REVISION,
+    MAX_LIMIT,
     SamplingSpec,
     SourceConfigurationError,
     SourceRecord,
@@ -89,6 +90,26 @@ def test_non_positive_or_non_integer_limit_is_refused(limit: object) -> None:
         SamplingSpec(limit=limit)  # ty: ignore[invalid-argument-type]
 
 
+def test_limit_above_the_ceiling_is_refused() -> None:
+    """Without a ceiling, "bounded" is a promise the code does not keep."""
+    with pytest.raises(SourceConfigurationError, match="refuses more than"):
+        SamplingSpec(limit=MAX_LIMIT + 1)
+
+
+def test_limit_at_the_ceiling_is_allowed() -> None:
+    assert SamplingSpec(limit=MAX_LIMIT).limit == MAX_LIMIT
+
+
+@pytest.mark.parametrize(
+    "dataset",
+    ["../../../etc/passwd", "no-slash", "a//b", "", "HuggingFaceFW/finepdfs/extra", "a/b?x=1"],
+)
+def test_dataset_id_is_validated_because_it_reaches_the_remote_path(dataset: str) -> None:
+    """REGRESSION: dataset was an unvalidated field interpolated straight into the Hub path."""
+    with pytest.raises(SourceConfigurationError, match="dataset"):
+        SourceRef(dataset=dataset)
+
+
 def test_unknown_strategy_is_refused() -> None:
     with pytest.raises(SourceConfigurationError):
         SamplingSpec(strategy="random")
@@ -102,17 +123,32 @@ def test_empty_seed_is_refused() -> None:
 # --------------------------------------------------------------------------- read window
 
 
+@pytest.mark.parametrize("limit", [1, 100, 999, 1000, 5000])
+def test_head_reads_exactly_the_limit(limit: int) -> None:
+    """REGRESSION: head used to round up to a nominal row group, fetching 1000 rows to emit 100."""
+    assert read_window(limit, "head") == limit
+
+
 @pytest.mark.parametrize(
     ("limit", "expected"),
     [(1, 1000), (100, 1000), (1000, 1000), (1001, 2000), (2000, 2000)],
 )
-def test_read_window_rounds_up_to_whole_row_groups(limit: int, expected: int) -> None:
-    assert read_window(limit) == expected
+def test_hash_rounds_up_to_whole_row_groups(limit: int, expected: int) -> None:
+    assert read_window(limit, "hash") == expected
+
+
+def test_hash_window_respects_the_real_row_group_size() -> None:
+    assert read_window(3, "hash", rows_per_row_group=5) == 5
 
 
 def test_read_window_rejects_a_non_positive_row_group_size() -> None:
     with pytest.raises(SourceConfigurationError):
-        read_window(10, rows_per_row_group=0)
+        read_window(10, "hash", rows_per_row_group=0)
+
+
+def test_read_window_rejects_an_unknown_strategy() -> None:
+    with pytest.raises(SourceConfigurationError):
+        read_window(10, "random")
 
 
 # --------------------------------------------------------------------------- selection
@@ -200,6 +236,18 @@ def test_build_record_projects_the_used_columns() -> None:
     assert record.text == "hello"
 
 
+@pytest.mark.parametrize("score", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_score_is_refused_at_the_boundary(score: float) -> None:
+    """REGRESSION: NaN is truthy, so it slipped through to canonical_json as a late traceback."""
+    with pytest.raises(SourceConfigurationError, match="non-finite"):
+        build_record(0, {"id": "a", "url": "https://x.invalid/a.pdf", "full_doc_lid_score": score})
+
+
+def test_fractional_token_count_is_refused_rather_than_truncated() -> None:
+    with pytest.raises(SourceConfigurationError, match="fractional"):
+        build_record(0, {"id": "a", "url": "https://x.invalid/a.pdf", "token_count": 3.5})
+
+
 def test_build_record_tolerates_missing_optional_metadata() -> None:
     record = build_record(0, {"id": "a", "url": "https://example.invalid/a.pdf"})
     assert record.token_count == 0
@@ -240,8 +288,7 @@ def manifest_for(
         ref=ref or SourceRef(),
         spec=spec or SamplingSpec(),
         records=records,
-        rows_read=1000,
-        rows_per_row_group=1000,
+        read={"rows_fetched": 100, "row_groups_read": 1, "rows_per_row_group": 1000},
     )
 
 
@@ -250,6 +297,13 @@ def test_manifest_records_full_source_provenance() -> None:
     assert manifest["source"] == SourceRef().as_dict()
     assert manifest["sampling"] == SamplingSpec().as_dict()
     assert manifest["counts"] == {"selected": 1}
+
+
+def test_manifest_reports_what_was_fetched_not_what_was_asked_for() -> None:
+    read = manifest_for([make_record(0)])["read"]
+    assert read["rows_fetched"] == 100
+    assert read["row_groups_read"] == 1
+    assert read["columns"]
 
 
 def test_manifest_excludes_document_bodies() -> None:

@@ -13,7 +13,7 @@ import sys
 import pytest
 
 from finepdf_to_images.adapters.source import LocalShardReader, ShardWindow
-from finepdf_to_images.cli import EXIT_OK, EXIT_USAGE, main
+from finepdf_to_images.cli import EXIT_FAILURE, EXIT_OK, EXIT_USAGE, main
 from finepdf_to_images.domain.source import (
     SamplingSpec,
     SourceConfigurationError,
@@ -47,11 +47,28 @@ def test_reader_never_returns_more_than_requested(reader: LocalShardReader, max_
     assert len(reader.read(SourceRef(), max_rows=max_rows).rows) == min(max_rows, ROW_COUNT)
 
 
-def test_reader_stops_after_the_row_groups_the_limit_requires(reader: LocalShardReader) -> None:
-    """The whole point: a small limit must not pull the rest of a multi-gigabyte shard."""
-    window = reader.read(SourceRef(), max_rows=ROWS_PER_ROW_GROUP)
-    assert window.total_rows == ROW_COUNT
-    assert len(window.rows) == ROWS_PER_ROW_GROUP
+@pytest.mark.parametrize(
+    ("max_rows", "expected_groups"),
+    [(1, 1), (5, 1), (6, 2), (10, 2), (11, 3), (20, 4)],
+)
+def test_reader_fetches_only_the_row_groups_the_limit_requires(
+    reader: LocalShardReader, max_rows: int, expected_groups: int
+) -> None:
+    """The whole point: a small limit must not pull the rest of a multi-gigabyte shard.
+
+    REGRESSION: the previous version of this test only checked ``len(window.rows)``, which an
+    implementation that read every row group and sliced at the end would also satisfy. Asserting
+    on ``row_groups_read`` is what actually pins the property down.
+    """
+    window = reader.read(SourceRef(), max_rows=max_rows)
+    assert window.row_groups_read == expected_groups
+    assert window.rows_fetched == expected_groups * ROWS_PER_ROW_GROUP
+    assert window.total_rows == ROW_COUNT  # the rest of the shard was not read
+
+
+def test_a_one_row_limit_does_not_read_the_whole_shard(reader: LocalShardReader) -> None:
+    window = reader.read(SourceRef(), max_rows=1)
+    assert window.row_groups_read == 1 < window.total_row_groups
 
 
 def test_reader_requesting_more_rows_than_exist_returns_what_there_is(
@@ -86,6 +103,47 @@ def test_a_different_shard_name_is_not_silently_substituted(reader: LocalShardRe
 
 
 # --------------------------------------------------------------------------- pipeline
+
+
+def test_head_selection_fetches_no_more_row_groups_than_it_needs(
+    reader: LocalShardReader, tmp_path: pathlib.Path
+) -> None:
+    """REGRESSION: head asked for a nominal 1000-row window, so a 3-row run read the whole shard."""
+    result = run_select(
+        reader=reader, ref=SourceRef(), spec=SamplingSpec(limit=3), out_dir=tmp_path
+    )
+    assert result.row_groups_read == 1
+    assert result.rows_fetched == ROWS_PER_ROW_GROUP
+    assert result.manifest["read"]["rows_fetched"] == ROWS_PER_ROW_GROUP
+
+
+def test_hash_selection_widens_the_window_deliberately(
+    reader: LocalShardReader, tmp_path: pathlib.Path
+) -> None:
+    """hash needs a window larger than the sample; head does not. The manifest shows which."""
+    head = run_select(
+        reader=reader, ref=SourceRef(), spec=SamplingSpec(limit=3), out_dir=tmp_path / "head"
+    )
+    hashed = run_select(
+        reader=reader,
+        ref=SourceRef(),
+        spec=SamplingSpec(limit=3, strategy="hash"),
+        out_dir=tmp_path / "hash",
+    )
+    assert (
+        hashed.manifest["read"]["max_rows_requested"] > head.manifest["read"]["max_rows_requested"]
+    )
+
+
+def test_manifest_records_the_shard_size_so_the_bound_is_auditable(
+    reader: LocalShardReader, tmp_path: pathlib.Path
+) -> None:
+    read = run_select(
+        reader=reader, ref=SourceRef(), spec=SamplingSpec(limit=1), out_dir=tmp_path
+    ).manifest["read"]
+    assert read["shard_total_rows"] == ROW_COUNT
+    assert read["shard_total_row_groups"] == ROW_COUNT // ROWS_PER_ROW_GROUP
+    assert read["rows_fetched"] < read["shard_total_rows"]
 
 
 def test_selection_writes_a_manifest_and_records(
@@ -157,28 +215,27 @@ def test_records_file_keeps_the_document_text(
     assert b'"text":' in result.records_path.read_bytes()
 
 
-def test_reader_protocol_accepts_a_stub() -> None:
+def test_reader_protocol_accepts_a_stub(tmp_path: pathlib.Path) -> None:
     """The adapter is injectable: a fixture object satisfies the port without pyarrow."""
+    requested: list[int] = []
 
     class StubReader:
         def read(self, ref: SourceRef, *, max_rows: int, columns: object = ()) -> ShardWindow:
+            requested.append(max_rows)
             return ShardWindow(
                 rows=[{"id": "a", "url": "https://fixtures.invalid/a.pdf"}],
                 rows_per_row_group=1,
+                rows_fetched=1,
+                row_groups_read=1,
                 total_rows=1,
                 total_row_groups=1,
             )
 
     result = run_select(
-        reader=StubReader(),
-        ref=SourceRef(),
-        spec=SamplingSpec(limit=1),
-        out_dir=pathlib.Path(__file__).parent / "__unused__",
+        reader=StubReader(), ref=SourceRef(), spec=SamplingSpec(limit=1), out_dir=tmp_path
     )
     assert result.selected == 1
-    result.manifest_path.parent.joinpath("manifest.json").unlink()
-    result.records_path.unlink()
-    result.manifest_path.parent.rmdir()
+    assert requested == [1], "head must not ask for more rows than the limit"
 
 
 # --------------------------------------------------------------------------- CLI
@@ -220,6 +277,36 @@ def test_cli_rejects_an_invalid_reference_with_a_usage_error(
     code = run_cli(["select", "--source-dir", str(FIXTURE_ROOT), "--out", str(tmp_path), *extra])
     assert code == EXIT_USAGE
     assert not (tmp_path / "manifest.json").exists()
+
+
+def test_cli_rejects_a_limit_above_the_bounded_ceiling(tmp_path: pathlib.Path) -> None:
+    assert (
+        run_cli(
+            [
+                "select",
+                "--source-dir",
+                str(FIXTURE_ROOT),
+                "--limit",
+                "1000000",
+                "--out",
+                str(tmp_path),
+            ]
+        )
+        == EXIT_USAGE
+    )
+
+
+def test_cli_reports_a_corrupt_shard_as_a_failure_not_a_traceback(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    broken = tmp_path / "root" / "data" / "eng_Latn" / "train"
+    broken.mkdir(parents=True)
+    (broken / "000_00000.parquet").write_bytes(b"not a parquet file at all")
+    code = run_cli(
+        ["select", "--source-dir", str(tmp_path / "root"), "--out", str(tmp_path / "out")]
+    )
+    assert code == EXIT_FAILURE
+    assert capsys.readouterr().err.startswith("finepdf-to-images:")
 
 
 def test_cli_rejects_an_unknown_strategy(tmp_path: pathlib.Path) -> None:

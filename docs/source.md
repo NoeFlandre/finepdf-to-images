@@ -11,6 +11,7 @@
 | Shard | `000_00000.parquet` (`data/eng_Latn/train/000_00000.parquet`) |
 | Default limit | 100 rows |
 | Default strategy | `head` |
+| Hard ceiling | 5,000 rows (`MAX_LIMIT`) |
 | Default seed | `finepdf-to-images/v1` |
 
 Upstream licence: **ODC-BY**. Attribution and the redistribution rules for the *documents behind*
@@ -26,6 +27,15 @@ these rows are a separate matter, covered by the publication policy.
 The shard is **4.8 GB**: 388,000 rows in **388 row groups of 1,000**. A run reads whole row groups
 only, as many as the limit requires, and projects only the eleven columns the pipeline uses. The
 default 100-row run therefore touches **one row group**, not the shard, and never the corpus.
+
+`head` asks the reader for exactly `limit` rows — it keeps the first ones, so a wider window would
+be pure waste. `hash` rounds up to whole row groups, because sampling is only meaningful over a
+window larger than the sample. `--limit` is capped at **5,000** rows: without a ceiling, "bounded"
+is a promise the code does not keep, since a large enough limit would walk all 388 row groups.
+
+The manifest's `read` block reports the **fetch**, not the request — `rows_fetched`,
+`row_groups_read`, `max_rows_requested`, `shard_total_rows`, `shard_total_row_groups` — so the
+bound can be audited from the output rather than taken on trust.
 
 A malformed config, split, shard or revision raises `SourceConfigurationError` *before* any network
 access. There is no fallback path that widens a read — that behaviour is what the tests in
@@ -61,8 +71,8 @@ Both return rows in shard order, so every downstream artifact has one stable ord
 ## Output
 
 `manifest.json`
-:   Source reference, sampling parameters, what was read, counts, per-row provenance without the
-    document bodies, and a `records_digest` over the selected rows. No timestamp and no machine
+:   Source reference, sampling parameters, what was actually fetched, counts, per-row provenance
+    without the document bodies, and a `records_digest` over the selected rows. No timestamp and no machine
     detail: two runs of the same pinned input produce the same bytes.
 
 `records.jsonl`

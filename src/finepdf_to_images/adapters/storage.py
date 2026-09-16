@@ -20,7 +20,13 @@ def write_bytes(path: pathlib.Path, data: bytes) -> pathlib.Path:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+        # mkstemp creates 0600 and replace preserves it; published artifacts should follow the
+        # process umask like any other written file.
+        umask = os.umask(0)
+        os.umask(umask)
+        pathlib.Path(temporary).chmod(0o666 & ~umask)
         pathlib.Path(temporary).replace(path)
+        _fsync_directory(path.parent)
     except BaseException:
         pathlib.Path(temporary).unlink(missing_ok=True)
         raise
@@ -29,3 +35,12 @@ def write_bytes(path: pathlib.Path, data: bytes) -> pathlib.Path:
 
 def read_bytes(path: pathlib.Path) -> bytes:
     return path.read_bytes()
+
+
+def _fsync_directory(directory: pathlib.Path) -> None:
+    """Make the rename itself durable, not just the bytes it points at."""
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)

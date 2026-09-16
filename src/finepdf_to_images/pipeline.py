@@ -33,7 +33,8 @@ class SelectionResult:
     manifest_path: pathlib.Path
     records_path: pathlib.Path
     selected: int
-    rows_read: int
+    rows_fetched: int
+    row_groups_read: int
 
 
 def run_select(
@@ -44,7 +45,8 @@ def run_select(
     out_dir: pathlib.Path,
 ) -> SelectionResult:
     """Select a bounded sample from one pinned shard and write it deterministically."""
-    window = reader.read(ref, max_rows=read_window(spec.limit), columns=SELECTED_COLUMNS)
+    max_rows = read_window(spec.limit, spec.strategy)
+    window = reader.read(ref, max_rows=max_rows, columns=SELECTED_COLUMNS)
     records = [build_record(index, row) for index, row in enumerate(window.rows)]
     selected = select(records, spec)
 
@@ -52,17 +54,27 @@ def run_select(
         ref=ref,
         spec=spec,
         records=selected,
-        rows_read=len(window.rows),
-        rows_per_row_group=window.rows_per_row_group,
+        read={
+            "max_rows_requested": max_rows,
+            "rows_fetched": window.rows_fetched,
+            "row_groups_read": window.row_groups_read,
+            "rows_considered": len(window.rows),
+            "rows_per_row_group": window.rows_per_row_group,
+            "shard_total_rows": window.total_rows,
+            "shard_total_row_groups": window.total_row_groups,
+        },
     )
-    manifest_path = write_bytes(out_dir / MANIFEST_NAME, canonical_bytes(manifest) + b"\n")
+    # Records first: the manifest indexes them, so a failure between the two writes must not leave
+    # a manifest describing a file that does not exist.
     records_path = write_bytes(
         out_dir / RECORDS_NAME, canonical_jsonl([record.as_dict() for record in selected])
     )
+    manifest_path = write_bytes(out_dir / MANIFEST_NAME, canonical_bytes(manifest) + b"\n")
     return SelectionResult(
         manifest=manifest,
         manifest_path=manifest_path,
         records_path=records_path,
         selected=len(selected),
-        rows_read=len(window.rows),
+        rows_fetched=window.rows_fetched,
+        row_groups_read=window.row_groups_read,
     )
