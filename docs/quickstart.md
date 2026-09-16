@@ -29,6 +29,12 @@ Or entirely offline, against the committed fixture shard:
 uv run finepdf-to-images select --source-dir tests/fixtures/shards --limit 5 --out out/select
 ```
 
+Score the selected rows for agriculture relevance (see [Relevance scoring](scoring.md)):
+
+```bash
+uv run finepdf-to-images score --records out/select/records.jsonl --out out/score
+```
+
 Exit codes are a stable contract:
 
 | Code | Meaning |

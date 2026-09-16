@@ -24,6 +24,7 @@ from finepdf_to_images.adapters.source import (
     LocalShardReader,
     ShardReader,
 )
+from finepdf_to_images.adapters.storage import read_jsonl
 from finepdf_to_images.domain.source import (
     DEFAULT_CONFIG,
     DEFAULT_LIMIT,
@@ -35,7 +36,7 @@ from finepdf_to_images.domain.source import (
     SourceConfigurationError,
     SourceRef,
 )
-from finepdf_to_images.pipeline import run_select
+from finepdf_to_images.pipeline import run_score, run_select
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
@@ -73,11 +74,23 @@ def _cmd_select(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_score(args: argparse.Namespace) -> int:
+    records = read_jsonl(pathlib.Path(args.records))
+    result = run_score(records=records, out_dir=pathlib.Path(args.out))
+    print(f"scored     {result.scored}")
+    print(f"relevant   {result.relevant}")
+    print(f"manifest   {result.manifest_path}")
+    print(f"scored at  {result.scored_path}")
+    print(f"digest     {result.manifest['scored_digest']}")
+    return EXIT_OK
+
+
 #: Subcommand dispatch. ``argparse`` guarantees the key exists before we look it up, so there is
 #: no unreachable fallback branch to carry.
 COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "version": _cmd_version,
     "select": _cmd_select,
+    "score": _cmd_score,
 }
 
 
@@ -111,6 +124,20 @@ def _add_select_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--out", required=True, help="output directory for the manifest")
 
 
+def _add_score_parser(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser(
+        "score",
+        help="score selected records for agriculture relevance",
+        description=(
+            "Score the records written by `select` against a small, documented English "
+            "agriculture vocabulary. Every positive result carries the exact terms that produced "
+            "it, so the decision can be audited rather than trusted."
+        ),
+    )
+    parser.add_argument("--records", required=True, help="records.jsonl written by `select`")
+    parser.add_argument("--out", required=True, help="output directory for the scoring manifest")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser. Kept separate so documentation can render ``--help``."""
     parser = argparse.ArgumentParser(
@@ -124,6 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
     subparsers.add_parser("version", help="print the package version and exit")
     _add_select_parser(subparsers)
+    _add_score_parser(subparsers)
     return parser
 
 

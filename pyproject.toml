@@ -46,6 +46,10 @@ ban-relative-imports = "parents"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ARG"]
+# The scoring tests feed the normalizer deliberately ambiguous characters -- em/en dashes,
+# full-width Latin, NUL -- because folding them correctly is the behaviour under test. RUF001
+# flagging them is the rule working as designed on a file where the "confusable" is the point.
+"tests/unit/test_scoring.py" = ["ARG", "RUF001"]
 
 [tool.ty.environment]
 root = ["./src", "."]
