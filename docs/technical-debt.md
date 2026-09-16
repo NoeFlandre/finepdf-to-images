@@ -36,3 +36,18 @@ recovery path for a theoretical guarantee.
 
 **Trigger.** Enable `enforce_admins` if a second maintainer joins, or if a red gate is ever merged
 past in practice.
+
+## TD-004 — the pilot ships no curated allow-list entries
+
+**State.** `ALLOWED_LICENSES` is populated, but nothing in the pipeline produces a
+`curated-allowlist` declaration, so every artifact in the current run resolves to `metadata-only`.
+The published dataset therefore contains provenance and hashes and **no third-party bytes**.
+
+**Why.** Clearing a document for redistribution means a human establishing its terms. For an
+arbitrary sample of the open web that is per-document work, and guessing is precisely what
+[ADR-0005](adr/0005-conservative-publication-policy.md) refuses to do. Shipping the policy without
+entries is the honest state, not a misconfiguration.
+
+**Trigger.** Add entries — as reviewed, source-attributed records in this repository — when there
+is a concrete set of documents whose terms have actually been established. Until then the dataset
+card must say plainly that no source bytes are republished.

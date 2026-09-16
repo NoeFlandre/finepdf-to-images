@@ -57,9 +57,18 @@ uv run --group docs mkdocs serve
 
 ## Licensing and publication
 
-Membership in FinePDFs does not by itself grant permission to republish a source PDF or the images
-inside it. Publication is governed by a conservative, testable policy; artifacts whose
-redistribution status cannot be established are excluded from public binary publication and reduced
-to a metadata/hash reference. See the dataset card and `docs/` for the takedown contact.
+**Being in FinePDFs is not permission to republish a document.** FinePDFs is ODC-BY, which covers
+the dataset — text, metadata, compilation — not the copyright in the PDFs its rows point at. An
+HTTP 200 is not a licence either.
+
+So the default is refusal. `domain/policy.decide()` publishes bytes only when a `declared-open`
+status carries an allow-listed identifier *and* rests on a human decision recorded in this
+repository; everything else is reduced to provenance and hashes; a row that cannot be traced back
+to its FinePDFs row is dropped entirely. A Hypothesis property proves no input turns an unknown
+licence into an allowed one.
+
+The pilot ships no allow-list entries, so the current run republishes **no third-party bytes at
+all**. See [the policy](docs/policy.md) for the full rules, the limitations statement, and the
+takedown route.
 
 This repository's own code is licensed under Apache-2.0.
