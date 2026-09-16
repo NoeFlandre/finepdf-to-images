@@ -1,0 +1,65 @@
+name: CI
+
+# Deterministic pull-request gates. These jobs never reach the network beyond the package
+# index, never download FinePDFs, and never require a secret.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_LINK_MODE: copy
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Deterministic quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.16"
+          enable-cache: true
+      - name: Baseline (locked install)
+        run: uv sync --locked
+      - name: Ruff lint
+        run: uv run ruff check --output-format=github .
+      - name: Ruff format
+        run: uv run ruff format --check .
+      - name: ty
+        run: uv run ty check
+      - name: Tests
+        run: uv run pytest -m "not architecture"
+      - name: Architecture checks
+        run: uv run pytest -m architecture
+
+  docker:
+    name: Docker smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build image
+        run: docker build -t finepdf-to-images .
+      - name: Run documented help path
+        run: docker run --rm finepdf-to-images --help
+
+  docs:
+    name: Docs build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.16"
+          enable-cache: true
+      - name: Build MkDocs site strictly
+        run: uv run --locked --group docs mkdocs build --strict

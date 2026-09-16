@@ -1,0 +1,13 @@
+.git
+.venv
+.pytest_cache
+.ruff_cache
+.ty_cache
+htmlcov
+site
+dist
+build
+data
+out
+**/__pycache__
+.DS_Store
