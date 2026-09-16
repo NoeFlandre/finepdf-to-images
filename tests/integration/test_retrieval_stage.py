@@ -260,6 +260,32 @@ def test_a_chain_within_the_limit_still_succeeds(tmp_path: pathlib.Path) -> None
     assert result.retrieved == 1
 
 
+def test_the_record_says_where_the_bytes_actually_came_from(tmp_path: pathlib.Path) -> None:
+    """After a redirect the original crawl URL alone cannot say where the artifact was served."""
+    start, target = "https://a.invalid/go.pdf", "https://b.invalid/real.pdf"
+    result, _ = retrieve(
+        [row(0, start)], {start: redirect(target), target: pdf_response()}, tmp_path
+    )
+    record = read_jsonl(result.records_path)[0]
+    assert record["url"] == start
+    assert record["final_url"] == target
+
+
+def test_an_oversized_redirect_response_still_follows_the_chain(tmp_path: pathlib.Path) -> None:
+    """REGRESSION: the fixture transport dropped the Location when it truncated an oversized body,
+    so a test would stop the chain where the real transport followed it."""
+    start, target = "https://a.invalid/go.pdf", "https://b.invalid/real.pdf"
+    bulky = Response(status=302, content_type="text/html", body=b"x" * 5000, location=target)
+    result, transport = retrieve(
+        [row(0, start)],
+        {start: bulky, target: pdf_response()},
+        tmp_path,
+        limits=RetrievalLimits(max_bytes=1024),
+    )
+    assert transport.requested == [start, target]
+    assert result.retrieved == 1
+
+
 def test_a_relative_redirect_is_resolved_and_followed(tmp_path: pathlib.Path) -> None:
     start, target = "https://a.invalid/dir/go.pdf", "https://a.invalid/real.pdf"
     result, transport = retrieve(

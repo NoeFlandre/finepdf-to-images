@@ -255,6 +255,7 @@ def _fetch_one(
         content_type=response.content_type,
         body=response.body,
         limits=limits,
+        final_url=response.final_url,
     )
     return record, (response.body if record.ok else b"")
 

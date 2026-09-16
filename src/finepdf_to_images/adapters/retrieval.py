@@ -10,6 +10,7 @@ site at all.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from dataclasses import replace as dataclass_replace
 from typing import Any, Protocol
 
 from finepdf_to_images.domain.retrieval import (
@@ -44,6 +45,9 @@ class Response:
     #: The ``Location`` header, when the status is a redirect. Present so fixtures can exercise the
     #: redirect chain without a network.
     location: str = ""
+    #: The URL this response actually came from, which differs from the requested one after a
+    #: redirect. Without it the manifest cannot say where the bytes were served from.
+    final_url: str = ""
 
 
 class Transport(Protocol):
@@ -90,14 +94,16 @@ class FixtureTransport:
         except KeyError as error:
             raise AssertionError(f"no fixture registered for {url.url}") from error
         if len(response.body) > limits.max_bytes:
-            # Mirror the real transport: stop at the bound and mark the body incomplete.
-            return Response(
-                status=response.status,
-                content_type=response.content_type,
+            # Mirror the real transport: stop at the bound and mark the body incomplete. The
+            # location must survive, or an oversized 3xx would stop the chain here while the real
+            # transport followed it -- a fixture/real divergence that hides bugs.
+            return dataclass_replace(
+                response,
                 body=response.body[: limits.max_bytes + 1],
                 truncated=True,
+                final_url=url.url,
             )
-        return response
+        return dataclass_replace(response, final_url=url.url)
 
 
 class HttpxTransport:
@@ -126,7 +132,7 @@ class HttpxTransport:
             read=limits.read_timeout,
         )
         attempts = limits.retries + 1
-        last: Exception | None = None
+        last: Exception = TransportError(FailureReason.TIMEOUT, "no attempt was made")
 
         for _attempt in range(attempts):
             try:
@@ -143,13 +149,16 @@ class HttpxTransport:
                 # and one malformed row escaping here aborted an entire run -- losing every record
                 # already fetched, because the manifest is written after the loop. A failure must
                 # be a record, not an exception.
-                last = error
+                #
+                # Not retried: a malformed URL will fail identically the second time. Only a
+                # timeout is worth another attempt.
+                raise TransportError(
+                    FailureReason.TRANSPORT_ERROR, f"{type(error).__name__}: {error}"
+                ) from error
 
-        if isinstance(last, httpx.TimeoutException):
-            raise TransportError(FailureReason.TIMEOUT, str(last))
-        raise TransportError(
-            FailureReason.TRANSPORT_ERROR, f"{type(last).__name__}: {last}" if last else "unknown"
-        )
+        # Only a timeout reaches here: every other exception is classified and raised inside the
+        # loop, because retrying it would fail identically.
+        raise TransportError(FailureReason.TIMEOUT, str(last))
 
     def _follow(self, httpx: Any, url: SafeUrl, limits: RetrievalLimits, timeout: Any) -> Response:
         """Walk the redirect chain by hand, validating every hop."""
@@ -190,4 +199,5 @@ class HttpxTransport:
                 body=b"".join(chunks),
                 truncated=truncated,
                 location=response.headers.get("location", ""),
+                final_url=url.url,
             )

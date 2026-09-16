@@ -259,6 +259,9 @@ class RetrievalRecord:
     row_id: str
     url: str
     ok: bool
+    #: Where the bytes were actually served from. Equal to ``url`` unless a redirect was followed,
+    #: in which case the original crawl URL alone would not say where the artifact came from.
+    final_url: str = ""
     reason: str | None = None
     detail: str = ""
     status: int | None = None
@@ -281,6 +284,7 @@ def evaluate(
     content_type: str,
     body: bytes,
     limits: RetrievalLimits,
+    final_url: str = "",
 ) -> RetrievalRecord:
     """Turn a completed response into a success or a recorded failure.
 
@@ -292,6 +296,7 @@ def evaluate(
         row_id=row_id,
         url=url,
         ok=False,
+        final_url=final_url or url,
         status=status,
         content_type=content_type,
     )
