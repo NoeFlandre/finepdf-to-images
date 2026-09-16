@@ -1,0 +1,64 @@
+[project]
+name = "finepdf-to-images"
+version = "0.1.0"
+description = "Tiny proof-of-concept pipeline for finding agriculture-relevant FinePDF documents and publishing their source PDFs and images."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "Apache-2.0"
+authors = [{ name = "Noe Flandre" }]
+dependencies = []
+
+[project.scripts]
+finepdf-to-images = "finepdf_to_images.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/finepdf_to_images"]
+
+[dependency-groups]
+docs = ["mkdocs>=1.6"]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "ruff>=0.14",
+    "ty>=0.0.1a10",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C90", "RUF", "ARG", "PTH", "TID"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 8
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "parents"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ARG"]
+
+[tool.ty.environment]
+root = ["./src", "./tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers --strict-config"
+markers = [
+    "acceptance: end-to-end acceptance scenarios",
+    "integration: tests crossing an I/O adapter boundary with local fixtures",
+    "architecture: import-boundary and structural checks",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["src/finepdf_to_images"]
+
+[tool.coverage.report]
+show_missing = true

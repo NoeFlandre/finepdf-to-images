@@ -1,0 +1,16 @@
+site_name: finepdf-to-images
+site_description: Bounded proof-of-concept pipeline from FinePDFs rows to PDF and image artifacts.
+repo_url: https://github.com/NoeFlandre/finepdf-to-images
+theme:
+  name: readthedocs
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Architecture: architecture.md
+  - Quality gates: quality.md
+  - Decisions:
+      - Overview: adr/index.md
+      - ADR-0001 Pure domain, thin adapters: adr/0001-pure-domain-thin-adapters.md
+      - ADR-0002 uv, Ruff, ty and a committed lockfile: adr/0002-uv-ruff-ty-toolchain.md
+      - ADR-0003 A dependency-free argparse CLI: adr/0003-argparse-cli.md
+  - Technical debt: technical-debt.md
