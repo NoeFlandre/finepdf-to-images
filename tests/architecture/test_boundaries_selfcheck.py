@@ -15,9 +15,9 @@ import ast
 import pytest
 
 from tests.architecture.boundaries import (
-    FORBIDDEN_IN_DOMAIN,
-    external_roots,
+    external_modules,
     find_cycle,
+    forbidden_hits,
     internal_targets,
     layer_of,
     module_name,
@@ -62,16 +62,41 @@ def test_init_modules_collapse_onto_their_package(parts: tuple[str, ...], expect
     ],
 )
 def test_forbidden_io_libraries_are_detected_in_both_import_forms(source: str) -> None:
-    assert external_roots(parse(source)) & FORBIDDEN_IN_DOMAIN
+    assert forbidden_hits(parse(source))
 
 
-@pytest.mark.parametrize("source", ["import io", "from io import BytesIO", "import json", ""])
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import io",
+        "from io import BytesIO",
+        "import json",
+        "",
+        # urllib.parse is pure string manipulation; only the I/O submodules are banned.
+        "from urllib.parse import urlsplit",
+        "import urllib.parse",
+    ],
+)
 def test_pure_stdlib_is_not_flagged(source: str) -> None:
-    assert not external_roots(parse(source)) & FORBIDDEN_IN_DOMAIN
+    assert not forbidden_hits(parse(source))
 
 
-def test_the_package_itself_is_not_an_external_root() -> None:
-    assert external_roots(parse("from finepdf_to_images import __version__")) == set()
+@pytest.mark.parametrize(
+    "source", ["import urllib.request", "from urllib.request import urlopen", "import urllib.error"]
+)
+def test_the_io_submodules_of_an_otherwise_allowed_package_are_flagged(source: str) -> None:
+    """REGRESSION: banning the whole `urllib` package would push the domain into hand-rolling a
+    URL parser, which is worse than the rule was protecting against."""
+    assert forbidden_hits(parse(source))
+
+
+def test_a_submodule_of_a_banned_package_is_flagged() -> None:
+    assert forbidden_hits(parse("import os.path"))
+
+
+def test_the_package_itself_is_not_an_external_module() -> None:
+    assert external_modules(parse("from finepdf_to_images import __version__")) == set()
+    assert external_modules(parse("import finepdf_to_images.domain.source")) == set()
 
 
 # --------------------------------------------------------------------------- internal imports

@@ -14,17 +14,21 @@ Code   Meaning
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 
 from finepdf_to_images import __version__
+from finepdf_to_images.adapters.retrieval import HttpxTransport
 from finepdf_to_images.adapters.source import (
     HuggingFaceShardReader,
     LocalShardReader,
     ShardReader,
 )
-from finepdf_to_images.adapters.storage import read_jsonl
+from finepdf_to_images.adapters.storage import read_bytes, read_jsonl
+from finepdf_to_images.domain.retrieval import RetrievalLimits
 from finepdf_to_images.domain.source import (
     DEFAULT_CONFIG,
     DEFAULT_LIMIT,
@@ -36,7 +40,7 @@ from finepdf_to_images.domain.source import (
     SourceConfigurationError,
     SourceRef,
 )
-from finepdf_to_images.pipeline import run_score, run_select
+from finepdf_to_images.pipeline import run_retrieve, run_score, run_select
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
@@ -85,12 +89,61 @@ def _cmd_score(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_retrieve(args: argparse.Namespace) -> int:
+    scored = read_jsonl(pathlib.Path(args.scored))
+    rows = [row for row in scored if not args.relevant_only or _is_relevant(row)]
+    source = _source_from(pathlib.Path(args.select_manifest))
+    limits = RetrievalLimits(
+        connect_timeout=args.connect_timeout,
+        read_timeout=args.read_timeout,
+        max_bytes=args.max_bytes,
+        max_redirects=args.max_redirects,
+        retries=args.retries,
+    )
+    result = run_retrieve(
+        transport=HttpxTransport(),
+        rows=rows,
+        source=source,
+        out_dir=pathlib.Path(args.out),
+        limits=limits,
+    )
+    print(f"attempted  {result.attempted}")
+    print(f"retrieved  {result.retrieved}")
+    print(f"unique     {result.unique}")
+    print(f"failed     {result.failed}")
+    for reason, count in result.manifest["failures"].items():
+        print(f"  {reason:<20} {count}")
+    print(f"manifest   {result.manifest_path}")
+    return EXIT_OK
+
+
+def _source_from(path: pathlib.Path) -> Mapping[str, Any]:
+    """Read the select manifest's source block, refusing anything that is not one.
+
+    Pointing --select-manifest at the *score* manifest is an easy mistake, and it used to produce
+    a bare KeyError traceback rather than a diagnostic.
+    """
+    manifest = json.loads(read_bytes(path))
+    if not isinstance(manifest, dict) or manifest.get("stage") != "select":
+        raise ValueError(f"{path} is not a select manifest (stage is not 'select')")
+    source = manifest.get("source")
+    if not isinstance(source, dict):
+        raise ValueError(f"{path} has no usable 'source' block")
+    return source
+
+
+def _is_relevant(row: Mapping[str, Any]) -> bool:
+    relevance = row.get("relevance")
+    return bool(isinstance(relevance, dict) and relevance.get("relevant"))
+
+
 #: Subcommand dispatch. ``argparse`` guarantees the key exists before we look it up, so there is
 #: no unreachable fallback branch to carry.
 COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "version": _cmd_version,
     "select": _cmd_select,
     "score": _cmd_score,
+    "retrieve": _cmd_retrieve,
 }
 
 
@@ -138,6 +191,35 @@ def _add_score_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--out", required=True, help="output directory for the scoring manifest")
 
 
+def _add_retrieve_parser(subparsers: argparse._SubParsersAction) -> None:
+    defaults = RetrievalLimits()
+    parser = subparsers.add_parser(
+        "retrieve",
+        help="retrieve the source PDFs for scored rows, under strict bounds",
+        description=(
+            "Fetch the source PDF for each selected row. Only http and https URLs are requested, "
+            "and only after validation; responses are bounded by timeout and size, validated by "
+            "PDF magic bytes rather than by content type, and deduplicated by SHA-256. Every "
+            "failure is recorded with its reason."
+        ),
+    )
+    parser.add_argument("--scored", required=True, help="scored.jsonl written by `score`")
+    parser.add_argument(
+        "--select-manifest", required=True, help="manifest.json written by `select`, for provenance"
+    )
+    parser.add_argument("--out", required=True, help="output directory")
+    parser.add_argument(
+        "--relevant-only",
+        action="store_true",
+        help="retrieve only rows the scorer marked relevant (the usual pilot behaviour)",
+    )
+    parser.add_argument("--connect-timeout", type=float, default=defaults.connect_timeout)
+    parser.add_argument("--read-timeout", type=float, default=defaults.read_timeout)
+    parser.add_argument("--max-bytes", type=int, default=defaults.max_bytes)
+    parser.add_argument("--max-redirects", type=int, default=defaults.max_redirects)
+    parser.add_argument("--retries", type=int, default=defaults.retries)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser. Kept separate so documentation can render ``--help``."""
     parser = argparse.ArgumentParser(
@@ -152,6 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("version", help="print the package version and exit")
     _add_select_parser(subparsers)
     _add_score_parser(subparsers)
+    _add_retrieve_parser(subparsers)
     return parser
 
 

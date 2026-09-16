@@ -12,9 +12,8 @@ import pathlib
 import pytest
 
 from tests.architecture.boundaries import (
-    FORBIDDEN_IN_DOMAIN,
-    external_roots,
     find_cycle,
+    forbidden_hits,
     internal_targets,
     layer_of,
     module_name,
@@ -57,7 +56,7 @@ def test_source_tree_contains_the_expected_layers() -> None:
 
 def test_domain_modules_import_no_io_libraries() -> None:
     offences = {
-        name: sorted(external_roots(tree) & FORBIDDEN_IN_DOMAIN)
+        name: sorted(forbidden_hits(tree))
         for name, (_package, tree) in _modules().items()
         if layer_of(name) == "domain"
     }
