@@ -3,7 +3,7 @@
 ## Layering
 
 ```
-cli / pipeline      composition roots
+cli                 composition root (a `pipeline` module joins it with the pipeline issues)
         |
    adapters         Hugging Face, HTTP, filesystem, PDF, publishing
         |
@@ -14,8 +14,12 @@ Dependencies point **inwards only**. The domain never imports an adapter, the CL
 and never imports `httpx`, `pypdf`, `pyarrow`, `huggingface_hub`, `os`, `pathlib`, `subprocess`,
 `tempfile`, `urllib`, `socket` or `shutil`.
 
-This is not a convention, it is a test. `tests/architecture/test_import_boundaries.py` parses every
-module in `src/` and fails the build on a violation or on an import cycle.
+This is not a convention, it is a test. `tests/architecture/` parses every module in `src/` and
+fails the build on a violation or on an import cycle. It understands every import form that can
+cross a layer — `import finepdf_to_images.adapters`, `from finepdf_to_images.adapters import x`,
+`from finepdf_to_images import adapters`, and relative imports — and the analyser itself carries
+regression tests in `test_boundaries_selfcheck.py`, because a boundary check that silently matches
+nothing buys confidence without paying for it.
 
 ## Why
 

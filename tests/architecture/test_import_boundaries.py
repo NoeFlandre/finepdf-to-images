@@ -1,4 +1,8 @@
-"""Architecture checks: the domain layer stays pure and the package stays acyclic."""
+"""Architecture checks: the domain layer stays pure and the package stays acyclic.
+
+The analysis lives in :mod:`tests.architecture.boundaries` and is itself regression-tested in
+:mod:`tests.architecture.test_boundaries_selfcheck`.
+"""
 
 from __future__ import annotations
 
@@ -7,102 +11,75 @@ import pathlib
 
 import pytest
 
+from tests.architecture.boundaries import (
+    FORBIDDEN_IN_DOMAIN,
+    external_roots,
+    find_cycle,
+    internal_targets,
+    layer_of,
+    module_name,
+    package_name,
+)
+
 SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "finepdf_to_images"
 
-#: Anything that performs network, filesystem, PDF or Hub I/O must stay out of the domain.
-FORBIDDEN_IN_DOMAIN = {
-    "datasets",
-    "fsspec",
-    "httpx",
-    "huggingface_hub",
-    "os",
-    "pathlib",
-    "pyarrow",
-    "pypdf",
-    "requests",
-    "shutil",
-    "socket",
-    "subprocess",
-    "tempfile",
-    "urllib",
-}
+#: The domain sits at the bottom of the dependency arrows; it may import nothing above it.
+LAYERS_ABOVE_DOMAIN = frozenset({"adapters", "cli", "pipeline", "__main__"})
 
 pytestmark = pytest.mark.architecture
 
 
-def _modules() -> dict[str, ast.Module]:
-    return {
-        str(path.relative_to(SRC).with_suffix("")).replace("/", "."): ast.parse(
-            path.read_text(encoding="utf-8")
+def _modules() -> dict[str, tuple[str, ast.Module]]:
+    """Map dotted module name -> (containing package, parsed tree)."""
+    modules: dict[str, tuple[str, ast.Module]] = {}
+    for path in sorted(SRC.rglob("*.py")):
+        parts = path.relative_to(SRC).with_suffix("").parts
+        modules[module_name(parts)] = (
+            package_name(parts),
+            ast.parse(path.read_text(encoding="utf-8")),
         )
-        for path in sorted(SRC.rglob("*.py"))
+    return modules
+
+
+def _graph() -> dict[str, set[str]]:
+    return {
+        name: internal_targets(tree, package=package)
+        for name, (package, tree) in _modules().items()
     }
 
 
-def _imported_roots(tree: ast.Module) -> set[str]:
-    roots: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            roots.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            roots.add(node.module.split(".")[0])
-    return roots
-
-
-def test_source_tree_is_not_empty() -> None:
-    assert _modules(), "no python modules found under src/finepdf_to_images"
+def test_source_tree_contains_the_expected_layers() -> None:
+    """Guards against a rename silently turning every check below into a no-op."""
+    modules = _modules()
+    assert modules, "no python modules found under src/finepdf_to_images"
+    assert {"domain", "adapters", "cli"} <= set(modules)
 
 
 def test_domain_modules_import_no_io_libraries() -> None:
     offences = {
-        name: sorted(_imported_roots(tree) & FORBIDDEN_IN_DOMAIN)
-        for name, tree in _modules().items()
-        if name.startswith("domain")
+        name: sorted(external_roots(tree) & FORBIDDEN_IN_DOMAIN)
+        for name, (_package, tree) in _modules().items()
+        if layer_of(name) == "domain"
     }
-    assert {k: v for k, v in offences.items() if v} == {}
+    assert {name: bad for name, bad in offences.items() if bad} == {}
 
 
-def test_domain_never_imports_adapters_or_cli() -> None:
-    offences: dict[str, list[str]] = {}
-    for name, tree in _modules().items():
-        if not name.startswith("domain"):
-            continue
-        bad = sorted(
-            target
-            for target in _internal_targets(tree)
-            if target.startswith(("adapters", "cli", "pipeline"))
-        )
-        if bad:
-            offences[name] = bad
-    assert offences == {}
-
-
-def _internal_targets(tree: ast.Module) -> set[str]:
-    targets: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            if node.module.startswith("finepdf_to_images."):
-                targets.add(node.module.split(".", 1)[1])
-        elif isinstance(node, ast.ImportFrom) and node.level and node.module:
-            targets.add(node.module)
-    return targets
+def test_domain_never_imports_an_outer_layer() -> None:
+    offences = {
+        name: sorted(target for target in targets if layer_of(target) in LAYERS_ABOVE_DOMAIN)
+        for name, targets in _graph().items()
+        if layer_of(name) == "domain"
+    }
+    assert {name: bad for name, bad in offences.items() if bad} == {}
 
 
 def test_package_import_graph_is_acyclic() -> None:
-    graph = {name: _internal_targets(tree) for name, tree in _modules().items()}
+    cycle = find_cycle(_graph())
+    assert cycle is None, f"import cycle: {' -> '.join(cycle or [])}"
+
+
+def test_import_graph_has_real_edges() -> None:
+    """A graph with no edges cannot contain a cycle, which would make the check above vacuous."""
+    graph = _graph()
     known = set(graph)
-    graph = {name: {t for t in targets if t in known} for name, targets in graph.items()}
-
-    state: dict[str, int] = {}
-
-    def visit(node: str, trail: tuple[str, ...]) -> None:
-        if state.get(node) == 2:
-            return
-        assert state.get(node) != 1, f"import cycle: {' -> '.join([*trail, node])}"
-        state[node] = 1
-        for nxt in sorted(graph[node]):
-            visit(nxt, (*trail, node))
-        state[node] = 2
-
-    for node in sorted(graph):
-        visit(node, ())
+    assert any(targets & known for targets in graph.values())

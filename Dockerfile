@@ -18,5 +18,9 @@ RUN uv sync --locked --no-install-project --no-dev
 COPY src ./src
 RUN uv sync --locked --no-dev
 
+# Run unprivileged: later stages fetch remote PDFs and parse untrusted bytes.
+RUN useradd --create-home --uid 10001 app && chown -R app:app /app /opt/venv
+USER app
+
 ENTRYPOINT ["finepdf-to-images"]
 CMD ["--help"]

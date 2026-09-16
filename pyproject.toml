@@ -22,7 +22,6 @@ packages = ["src/finepdf_to_images"]
 docs = ["mkdocs>=1.6"]
 dev = [
     "pytest>=8.3",
-    "pytest-cov>=6.0",
     "ruff>=0.14",
     "ty>=0.0.1a10",
 ]
@@ -45,20 +44,15 @@ ban-relative-imports = "parents"
 "tests/**" = ["ARG"]
 
 [tool.ty.environment]
-root = ["./src", "./tests"]
+root = ["./src", "."]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers --strict-config"
+pythonpath = ["."]
 markers = [
     "acceptance: end-to-end acceptance scenarios",
     "integration: tests crossing an I/O adapter boundary with local fixtures",
     "architecture: import-boundary and structural checks",
 ]
 
-[tool.coverage.run]
-branch = true
-source = ["src/finepdf_to_images"]
-
-[tool.coverage.report]
-show_missing = true

@@ -39,7 +39,7 @@ by the commands that need one.
 | --- | --- | --- |
 | Domain | `finepdf_to_images.domain` | Pure. No network, filesystem, PDF or Hub imports. |
 | Adapters | `finepdf_to_images.adapters` | All side effects, thin and injectable. |
-| Composition | `finepdf_to_images.cli`, `finepdf_to_images.pipeline` | Wires adapters into the domain. |
+| Composition | `finepdf_to_images.cli` | Wires adapters into the domain. |
 
 The rule is executable: `tests/architecture/` parses every module and fails the build on a
 violation or an import cycle.

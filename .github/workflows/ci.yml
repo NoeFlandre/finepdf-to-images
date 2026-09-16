@@ -26,6 +26,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
+          version: "0.11.16"
           enable-cache: true
       - name: Baseline (locked install)
         run: uv sync --locked
@@ -36,7 +37,7 @@ jobs:
       - name: ty
         run: uv run ty check
       - name: Tests
-        run: uv run pytest
+        run: uv run pytest -m "not architecture"
       - name: Architecture checks
         run: uv run pytest -m architecture
 
@@ -58,6 +59,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
+          version: "0.11.16"
           enable-cache: true
       - name: Build MkDocs site strictly
         run: uv run --locked --group docs mkdocs build --strict
