@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import dataclasses
 import enum
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
+from collections.abc import Set as AbstractSet
 from typing import Any
 
 #: Attribution required by the source dataset's own licence.
@@ -101,7 +102,17 @@ REQUIRED_PROVENANCE: tuple[str, ...] = (
     "row_index",
     "row_id",
     "url",
+    "date",
 )
+
+#: Additionally required once a decision concerns retrieved bytes. ``metadata-only`` is only a
+#: meaningful fallback if the metadata identifies *which* bytes it stands for, so a row about an
+#: artifact must carry that artifact's digest. The retrieval and extraction stages pass
+#: ``require_artifact_hash=True``.
+ARTIFACT_PROVENANCE: tuple[str, ...] = (*REQUIRED_PROVENANCE, "sha256")
+
+#: Fields that must be whole numbers rather than text.
+_INTEGER_FIELDS: frozenset[str] = frozenset({"row_index"})
 
 
 class Disposition(enum.StrEnum):
@@ -126,6 +137,15 @@ class LicenseDeclaration:
     identifier: str | None = None
     evidence: EvidenceSource = EvidenceSource.NONE
     note: str = ""
+
+    def __post_init__(self) -> None:
+        # StrEnum members compare equal to their string values, so a raw "curated-allowlist"
+        # would otherwise slip through the evidence gate while a raw status string correctly
+        # failed. Asymmetric trust like that is how a policy rots; both are checked here.
+        if not isinstance(self.status, LicenseStatus):
+            raise TypeError(f"status must be a LicenseStatus, got {self.status!r}")
+        if not isinstance(self.evidence, EvidenceSource):
+            raise TypeError(f"evidence must be an EvidenceSource, got {self.evidence!r}")
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -156,24 +176,37 @@ class PublicationDecision:
         }
 
 
-def missing_provenance(provenance: Mapping[str, Any]) -> list[str]:
-    """Required provenance fields that are absent or empty.
+def missing_provenance(
+    provenance: Mapping[str, Any], required: tuple[str, ...] = REQUIRED_PROVENANCE
+) -> list[str]:
+    """Required provenance fields that are absent, empty, or of the wrong type.
 
-    ``row_index`` of ``0`` is a legitimate value, so emptiness is tested by ``is None`` and blank
-    strings rather than by falsiness.
+    A falsiness test would drop ``row_index`` of ``0``, which is the shard's first row and a
+    perfectly valid value. An ``is None`` plus blank-string test, which is what this was, goes too
+    far the other way: ``url=False``, ``url=0`` and ``url=[]`` all passed as present, so a row with
+    no usable url could be published as "traceable". Each field is therefore checked against the
+    type it is actually supposed to be.
     """
     missing = []
-    for field in REQUIRED_PROVENANCE:
-        value = provenance.get(field)
-        if value is None or (isinstance(value, str) and not value.strip()):
+    for field in required:
+        if not _is_usable(field, provenance.get(field)):
             missing.append(field)
     return missing
+
+
+def _is_usable(field: str, value: Any) -> bool:
+    if field in _INTEGER_FIELDS:
+        # bool is an int subclass; True as a row index is a bug, not a row.
+        return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    return isinstance(value, str) and bool(value.strip())
 
 
 def decide(
     provenance: Mapping[str, Any],
     license: LicenseDeclaration | None = None,
-    allowed_licenses: Sequence[str] | frozenset[str] = ALLOWED_LICENSES,
+    allowed_licenses: AbstractSet[str] = ALLOWED_LICENSES,
+    *,
+    require_artifact_hash: bool = False,
 ) -> PublicationDecision:
     """Decide what may be published for one artifact.
 
@@ -190,8 +223,17 @@ def decide(
     assert.
     """
     declaration = license or LicenseDeclaration()
+    # A bare str is a valid Sequence[str], so an earlier signature let
+    # allowed_licenses="CC-BY-4.0" turn the allow list into a set of single characters, and an
+    # identifier of "C" published. Only a real set is accepted now.
+    if not isinstance(allowed_licenses, AbstractSet):
+        raise TypeError(
+            f"allowed_licenses must be a set of identifiers, got {type(allowed_licenses).__name__}"
+        )
 
-    absent = missing_provenance(provenance)
+    absent = missing_provenance(
+        provenance, ARTIFACT_PROVENANCE if require_artifact_hash else REQUIRED_PROVENANCE
+    )
     if absent:
         return PublicationDecision(
             disposition=Disposition.EXCLUDE,
@@ -219,7 +261,7 @@ def decide(
             license=declaration,
         )
 
-    if declaration.identifier not in set(allowed_licenses):
+    if declaration.identifier not in allowed_licenses:
         return PublicationDecision(
             disposition=Disposition.METADATA_ONLY,
             reason=(
@@ -243,6 +285,7 @@ def policy_summary() -> dict[str, Any]:
         "allowed_licenses": sorted(ALLOWED_LICENSES),
         "trusted_evidence": sorted(str(source) for source in TRUSTED_EVIDENCE),
         "required_provenance": list(REQUIRED_PROVENANCE),
+        "required_artifact_provenance": list(ARTIFACT_PROVENANCE),
         "source_attribution": SOURCE_ATTRIBUTION,
         "limitations": LIMITATION_STATEMENT,
         "takedown": TAKEDOWN_CONTACT,

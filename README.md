@@ -67,8 +67,8 @@ repository; everything else is reduced to provenance and hashes; a row that cann
 to its FinePDFs row is dropped entirely. A Hypothesis property proves no input turns an unknown
 licence into an allowed one.
 
-The pilot ships no allow-list entries, so the current run republishes **no third-party bytes at
-all**. See [the policy](docs/policy.md) for the full rules, the limitations statement, and the
-takedown route.
+The pilot ships no allow-list entries, so nothing would clear that bar even once the retrieval
+stage exists. See [the policy](docs/policy.md) for the full rules, the limitations statement, and
+the takedown route.
 
 This repository's own code is licensed under Apache-2.0.

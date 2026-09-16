@@ -23,10 +23,13 @@ evidence but are never sufficient.
 
 ## Consequences
 
-- The pilot ships no allow-list entries, so the current run publishes **no third-party bytes at
-  all** — only provenance and hashes. That is a real and visible cost, and it is the correct
-  outcome of applying this policy to an arbitrary web sample rather than a sign the policy is
-  misconfigured. Recorded as TD-004 so it is not mistaken for an oversight.
+- The pilot ships no allow-list entries, so nothing will clear the bar for byte publication once
+  the retrieval stage exists — the result will be provenance and hashes only. That is a real and
+  visible cost, and it is the correct outcome of applying this policy to an arbitrary web sample
+  rather than a sign the policy is misconfigured. Recorded as TD-004.
+- The policy lands ahead of the stages that consume it, so those stages are built against a decided
+  rule rather than inventing one. Until they land nothing calls `decide()`; recorded as TD-005 so
+  "no bytes are published" is not mistaken for "the policy refused them".
 - Every published row is traceable to its exact FinePDFs row and source URL, which is what makes
   the metadata-only fallback genuinely useful: the run can be reproduced and verified from it.
 - A decision to publish bytes requires editing this repository and passing review. That is slow on

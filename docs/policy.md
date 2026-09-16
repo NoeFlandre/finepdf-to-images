@@ -67,11 +67,24 @@ entry past it.
 
 ## Required provenance
 
-`dataset`, `revision`, `config`, `split`, `shard`, `row_index`, `row_id`, `url`.
+`dataset`, `revision`, `config`, `split`, `shard`, `row_index`, `row_id`, `url`, `date`.
+
+A row about retrieved bytes additionally requires `sha256` (`ARTIFACT_PROVENANCE`, passed by the
+retrieval and extraction stages as `require_artifact_hash=True`). `metadata-only` is only a
+meaningful fallback if the metadata identifies *which* bytes it stands for.
 
 Every published row carries all of these, so any artifact can be traced back to the exact FinePDFs
-row and source URL it came from. `row_index` of `0` is a real value, not an absence — a falsiness
-check there would silently drop every shard's first row.
+row and source URL it came from.
+
+Emptiness is checked per field type rather than by falsiness. `row_index` of `0` is a real value —
+a falsiness check would silently drop every shard's first row — but an `is None` check alone is too
+loose in the other direction: `url=False` and `url=[]` would read as present. So integer fields
+must be non-negative `int` (and not `bool`, which subclasses `int`), and the rest must be
+non-blank `str`.
+
+FinePDFs' extraction metadata (`extractor`, `is_truncated`, language scores) is carried on
+`SourceRecord` and travels with each row, but is not *required* by the policy: a document's
+redistribution status does not depend on how well its text was extracted.
 
 ## Limitations
 
@@ -79,9 +92,10 @@ Source documents were published by third parties under terms this project does n
 cannot verify at scale. Artifacts whose redistribution status could not be established are
 represented by metadata and hashes only.
 
-The pilot ships **no curated allow-list entries**, so in practice the current run publishes metadata
-and hashes and no third-party bytes at all. That is the honest outcome of a conservative policy
-applied to an arbitrary web sample, not a gap — see [technical debt](technical-debt.md) TD-004.
+The pilot ships **no curated allow-list entries**, so nothing will clear the bar for byte
+publication once the retrieval stage exists: the result will be metadata and hashes only. That is
+the honest outcome of a conservative policy applied to an arbitrary web sample, not a gap — see
+[technical debt](technical-debt.md) TD-004.
 
 ## Takedown
 
@@ -95,5 +109,7 @@ to publish is far lower than the cost of getting it wrong.
 > Source documents were identified through
 > [HuggingFaceFW/finepdfs](https://huggingface.co/datasets/HuggingFaceFW/finepdfs), licensed ODC-BY.
 
-This statement, the limitations and the takedown route are emitted into the published dataset card
-by `policy_summary()`, so the card cannot drift from the code that enforces the policy.
+`policy_summary()` returns this statement, the limitations and the takedown route in
+machine-readable form. The publication stage (issue #2) writes them into the dataset card from that
+function rather than restating them, so the card cannot drift from the code that enforces the
+policy. Until that stage lands, nothing calls it — see [technical debt](technical-debt.md) TD-005.

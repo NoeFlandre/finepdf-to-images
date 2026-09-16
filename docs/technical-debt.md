@@ -51,3 +51,18 @@ entries is the honest state, not a misconfiguration.
 **Trigger.** Add entries — as reviewed, source-attributed records in this repository — when there
 is a concrete set of documents whose terms have actually been established. Until then the dataset
 card must say plainly that no source bytes are republished.
+
+## TD-005 — the policy is not wired into a pipeline stage yet
+
+**State.** `domain.policy.decide()` is complete and tested, but nothing calls it: there is no
+retrieval or extraction stage yet to produce artifacts for it to judge, and no publication stage to
+consume its verdicts or to write `policy_summary()` into a dataset card.
+
+**Why.** The policy is deliberately a standalone pure function, delivered ahead of the stages that
+need it so that those stages are built against a decided rule rather than inventing one. Wiring it
+into a stage that does not exist would mean writing that stage here.
+
+**Trigger.** Issues #3 and #4 pass `require_artifact_hash=True` when judging retrieved bytes; issue
+#2 writes the card from `policy_summary()` and publishes only what `decide()` permits. Until all
+three land, the statement "this project republishes no third-party bytes" is true because no bytes
+are published at all — not because the policy refused them.

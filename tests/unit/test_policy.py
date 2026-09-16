@@ -14,6 +14,7 @@ from hypothesis import strategies as st
 
 from finepdf_to_images.domain.policy import (
     ALLOWED_LICENSES,
+    ARTIFACT_PROVENANCE,
     REQUIRED_PROVENANCE,
     Disposition,
     EvidenceSource,
@@ -33,6 +34,12 @@ COMPLETE_PROVENANCE: dict[str, Any] = {
     "row_index": 0,
     "row_id": "<urn:uuid:becf8a10-92d9-4f68-b6b4-5790712646a4>",
     "url": "https://example.invalid/a.pdf",
+    "date": "2023-01-30T22:07:32+00:00",
+}
+
+ARTIFACT_PROV: dict[str, Any] = {
+    **COMPLETE_PROVENANCE,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 }
 
 CLEARED = LicenseDeclaration(
@@ -156,6 +163,75 @@ def test_an_empty_allow_list_publishes_nothing() -> None:
     assert not decide(COMPLETE_PROVENANCE, CLEARED, allowed_licenses=frozenset()).publishes_bytes
 
 
+# --------------------------------------------------------------------------- regressions
+
+
+@pytest.mark.parametrize("allowed", ["CC-BY-4.0", ["CC-BY-4.0"], ("CC-BY-4.0",), b"CC-BY-4.0"])
+def test_allow_list_must_be_a_set_not_a_sequence(allowed: object) -> None:
+    """REGRESSION: str is a Sequence[str], so allowed_licenses="CC-BY-4.0" made the allow list a
+    set of single characters and an identifier of "C" published."""
+    with pytest.raises(TypeError, match="must be a set"):
+        # ty: ignore[invalid-argument-type]
+        decide(COMPLETE_PROVENANCE, CLEARED, allowed_licenses=allowed)
+
+
+def test_a_single_character_identifier_cannot_slip_through_a_string_allow_list() -> None:
+    declaration = LicenseDeclaration(
+        status=LicenseStatus.DECLARED_OPEN,
+        identifier="C",
+        evidence=EvidenceSource.CURATED_ALLOWLIST,
+    )
+    assert not decide(COMPLETE_PROVENANCE, declaration).publishes_bytes
+
+
+@pytest.mark.parametrize("value", [False, True, 0, 1, [], {}, b"", b"x", 1.5, object()])
+def test_a_non_string_url_is_missing_not_present(value: object) -> None:
+    """REGRESSION: only None and blank strings were rejected, so url=False read as traceable."""
+    assert missing_provenance({**COMPLETE_PROVENANCE, "url": value}) == ["url"]
+
+
+@pytest.mark.parametrize("value", [None, True, False, "0", 1.5, -1, [], b"0"])
+def test_row_index_must_be_a_whole_non_negative_int(value: object) -> None:
+    assert missing_provenance({**COMPLETE_PROVENANCE, "row_index": value}) == ["row_index"]
+
+
+def test_a_raw_string_status_is_refused_at_construction() -> None:
+    with pytest.raises(TypeError, match="LicenseStatus"):
+        LicenseDeclaration(status="declared-open")  # ty: ignore[invalid-argument-type]
+
+
+def test_a_raw_string_evidence_is_refused_at_construction() -> None:
+    """REGRESSION: StrEnum members compare equal to their values, so a raw "curated-allowlist"
+    string passed the evidence gate while a raw status string correctly failed."""
+    with pytest.raises(TypeError, match="EvidenceSource"):
+        LicenseDeclaration(evidence="curated-allowlist")  # ty: ignore[invalid-argument-type]
+
+
+# --------------------------------------------------------------------------- artifact rows
+
+
+def test_an_artifact_row_must_carry_its_digest() -> None:
+    """metadata-only only means something if the metadata says which bytes it stands for."""
+    decision = decide(COMPLETE_PROVENANCE, require_artifact_hash=True)
+    assert decision.disposition is Disposition.EXCLUDE
+    assert "sha256" in decision.reason
+
+
+def test_an_artifact_row_with_its_digest_is_published_as_metadata() -> None:
+    assert (
+        decide(ARTIFACT_PROV, require_artifact_hash=True).disposition is Disposition.METADATA_ONLY
+    )
+
+
+def test_artifact_provenance_extends_the_base_requirement() -> None:
+    assert set(REQUIRED_PROVENANCE) < set(ARTIFACT_PROVENANCE)
+    assert "sha256" in ARTIFACT_PROVENANCE
+
+
+def test_date_is_required_so_crawl_metadata_survives() -> None:
+    assert "date" in REQUIRED_PROVENANCE
+
+
 # --------------------------------------------------------------------------- the core property
 
 
@@ -225,6 +301,7 @@ def test_the_decision_serializes_with_its_reason() -> None:
 
 def test_the_summary_states_the_conservative_default() -> None:
     summary = policy_summary()
+    assert summary["required_artifact_provenance"][-1] == "sha256"
     assert summary["default_disposition"] == "metadata-only"
     assert summary["trusted_evidence"] == ["curated-allowlist"]
     assert "ODC-BY" in summary["source_attribution"]
