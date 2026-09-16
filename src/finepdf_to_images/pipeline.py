@@ -102,7 +102,9 @@ def run_score(*, records: Sequence[Mapping[str, Any]], out_dir: pathlib.Path) ->
     rows: list[dict[str, Any]] = []
     relevant = 0
     for record in records:
-        result = score_text(str(record.get("text", "")), language=str(record.get("language", "")))
+        # `or ""` rather than a str() default: an explicit JSON null would otherwise be
+        # stringified into the literal "None" and published as a language code.
+        result = score_text(record.get("text") or "", language=record.get("language") or "")
         relevant += int(result.relevant)
         rows.append(
             {
@@ -114,10 +116,13 @@ def run_score(*, records: Sequence[Mapping[str, Any]], out_dir: pathlib.Path) ->
         )
 
     manifest: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "stage": "score",
         "vocabulary": vocabulary_summary(),
         "counts": {"scored": len(rows), "relevant": relevant},
+        # Both digests: without the input one, a scored.jsonl cannot be tied back to the selection
+        # that produced it, and the provenance chain has a gap exactly where it matters.
+        "input_digest": content_digest([dict(record) for record in records]),
         "scored_digest": content_digest(rows),
     }
     scored_path = write_bytes(out_dir / SCORED_NAME, canonical_jsonl(rows))

@@ -33,6 +33,12 @@ be pure waste. `hash` rounds up to whole row groups, because sampling is only me
 window larger than the sample. `--limit` is capped at **5,000** rows: without a ceiling, "bounded"
 is a promise the code does not keep, since a large enough limit would walk all 388 row groups.
 
+!!! tip "A limit up to the row-group size is free"
+    Because a row group is the smallest unit Parquet can fetch, `--limit 1000` reads **exactly the
+    same bytes** as `--limit 100` on this shard — one row group either way. The manifest shows it:
+    `rows_fetched: 1000` in both cases. If you want more candidate documents downstream, raise the
+    limit to the row-group size before you consider reading a second group.
+
 The manifest's `read` block reports the **fetch**, not the request — `rows_fetched`,
 `row_groups_read`, `max_rows_requested`, `shard_total_rows`, `shard_total_row_groups` — so the
 bound can be audited from the output rather than taken on trust.

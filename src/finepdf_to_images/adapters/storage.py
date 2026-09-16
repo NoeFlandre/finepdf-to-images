@@ -38,10 +38,23 @@ def read_bytes(path: pathlib.Path) -> bytes:
 
 
 def read_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:
-    """Read a canonical JSONL file back into plain data."""
+    """Read a canonical JSONL file back into plain data.
+
+    Every line must be a JSON **object**. A bare array or scalar parses fine but is not a record,
+    and letting one through produced an ``AttributeError`` deep in the pipeline -- outside the
+    CLI's handlers, so the user saw a traceback instead of a diagnostic.
+    """
     if not path.is_file():
         raise FileNotFoundError(f"no such file: {path}")
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    rows = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line:
+            continue
+        value = json.loads(line)
+        if not isinstance(value, dict):
+            raise ValueError(f"{path}:{number}: expected a JSON object, got {type(value).__name__}")
+        rows.append(value)
+    return rows
 
 
 def _chmod_to_umask(path: pathlib.Path) -> None:

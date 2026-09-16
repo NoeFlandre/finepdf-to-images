@@ -87,9 +87,10 @@ def test_the_manifest_records_the_vocabulary_that_produced_the_decisions(
     manifest = run_score(records=read_jsonl(selected), out_dir=tmp_path / "score").manifest
     vocabulary = manifest["vocabulary"]
     assert vocabulary["language"] == "eng_Latn"
-    assert vocabulary["term_count"] > 0
+    assert vocabulary["concept_count"] > 0
+    assert vocabulary["surface_form_count"] >= vocabulary["concept_count"]
     assert vocabulary["thresholds"]["min_groups"] >= 1
-    assert vocabulary["excluded_ambiguous_terms"]
+    assert vocabulary["excluded_ambiguous_terms"]["corn"]
 
 
 def test_scoring_no_records_is_an_empty_run_not_an_error(tmp_path: pathlib.Path) -> None:
@@ -102,6 +103,48 @@ def test_scoring_no_records_is_an_empty_run_not_an_error(tmp_path: pathlib.Path)
 def test_scoring_a_record_with_no_text_field_is_a_negative(tmp_path: pathlib.Path) -> None:
     result = run_score(records=[{"row_index": 0, "row_id": "a", "url": "u"}], out_dir=tmp_path)
     assert result.relevant == 0
+
+
+def test_an_explicit_null_text_does_not_become_the_string_none(tmp_path: pathlib.Path) -> None:
+    """REGRESSION: str(record.get(...)) turned a JSON null into the literal "None"."""
+    result = run_score(
+        records=[{"row_index": 0, "row_id": "a", "url": "u", "text": None, "language": None}],
+        out_dir=tmp_path,
+    )
+    row = read_jsonl(result.scored_path)[0]
+    assert row["relevance"]["language"] == ""
+    assert b"None" not in result.scored_path.read_bytes()
+
+
+def test_the_manifest_ties_the_output_to_the_input_that_produced_it(
+    selected: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """REGRESSION: a scored.jsonl could not be traced back to the selection it scored."""
+    records = read_jsonl(selected)
+    first = run_score(records=records, out_dir=tmp_path / "a").manifest
+    second = run_score(records=records[:5], out_dir=tmp_path / "b").manifest
+    assert first["input_digest"] != second["input_digest"]
+    assert (
+        first["input_digest"]
+        == run_score(records=records, out_dir=tmp_path / "c").manifest["input_digest"]
+    )
+
+
+def test_a_jsonl_line_that_is_not_an_object_is_refused(tmp_path: pathlib.Path) -> None:
+    """REGRESSION: a bare array reached record.get() and raised AttributeError past the CLI."""
+    path = tmp_path / "bad.jsonl"
+    path.write_text('{"row_index":0}\n[1,2]\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="expected a JSON object"):
+        read_jsonl(path)
+
+
+def test_cli_reports_a_malformed_records_file_as_a_failure(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "bad.jsonl"
+    path.write_text("[1,2]\n", encoding="utf-8")
+    assert run_cli(["score", "--records", str(path), "--out", str(tmp_path / "o")]) == EXIT_FAILURE
+    assert "expected a JSON object" in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------- CLI
