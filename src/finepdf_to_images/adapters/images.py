@@ -164,3 +164,21 @@ class FixtureImageExtractor:
         if pdf_bytes not in self.images:
             raise ImageExtractionError("no fixture registered for these bytes")
         return list(self.images[pdf_bytes])
+
+
+def encoder_versions() -> dict[str, str]:
+    """The libraries whose decoding determines the published image bytes.
+
+    Recorded in every extract manifest because the encoded bytes are not portable across Pillow
+    builds: a wheel linked against zlib-ng produces different PNG bytes from one linked against
+    plain zlib, for identical pixels. A run should say what produced it. See TD-007.
+    """
+    import PIL
+    import pypdf
+    from PIL import features
+
+    return {
+        "pypdf": pypdf.__version__,
+        "pillow": PIL.__version__,
+        "pillow_zlib": str(features.version("zlib") or "unknown"),
+    }

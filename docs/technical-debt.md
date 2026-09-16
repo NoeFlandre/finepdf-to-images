@@ -81,3 +81,32 @@ fetches a few dozen public documents needs.
 **Trigger.** Before this pipeline is ever pointed at untrusted URLs from inside a network with
 anything worth reaching, or run as a service. Until then the exposure is a developer machine
 fetching public PDFs.
+
+## TD-007 — extracted image bytes are not portable across Pillow builds
+
+**State.** Embedded images that are not already in a standard format are re-encoded to PNG by
+Pillow. PNG encoding calls deflate, and the result depends on which implementation the installed
+wheel was built against: this project's macOS wheel links **zlib-ng**, the Linux wheel in CI links
+**plain zlib**, and they produce different bytes for identical pixels.
+
+Consequently the same pipeline, on the same inputs, with the same pinned dependency versions,
+produces **different image `sha256` values, different content-addressed paths and a different
+`images_digest`** on a different platform. Everything else in the pipeline — selection, scoring,
+retrieval manifests, PDF artifacts — is genuinely byte-identical; this stage is the exception.
+
+**How it was found.** Golden tests pinning the encoded hashes passed locally and failed in CI.
+That is the test doing its job.
+
+**What is done about it.** The golden tests assert the **decoded pixels**, which are portable. Every
+extract manifest records `encoder`: the pypdf version, the Pillow version and Pillow's zlib build,
+so a published run says what produced it.
+
+**Why it is not simply fixed.** The options all cost something: encoding at `compress_level=0`
+removes the variance but inflates a 1241×1755 image from ~200 KB to ~6.5 MB; publishing the PDF's
+original embedded stream bytes is faithful and portable but for raw-sample images is not a viewable
+file; vendoring an encoder is disproportionate for a pilot.
+
+**Trigger.** Before anyone relies on image hashes to compare two runs made on different machines,
+or before the published dataset is regenerated on a different platform and the artifact paths
+change. If that matters more than file size, publish the original embedded streams and record the
+format per image.

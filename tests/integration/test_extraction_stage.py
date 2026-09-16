@@ -1,7 +1,13 @@
 """Image extraction and indexing, against hand-written golden PDF fixtures.
 
 The fixtures are built byte by byte in ``tests/fixtures/build_pdf_fixtures.py`` rather than by a
-PDF library, so a library version bump cannot quietly change what these tests assert.
+PDF library, so what goes *in* is fixed by this repository rather than by a dependency.
+
+What comes *out* is asserted at the pixel level, not the encoded-byte level. PNG encoding depends
+on which deflate implementation the installed Pillow wheel was built against -- this project's
+macOS wheel links zlib-ng, CI's Linux wheel links plain zlib -- so the encoded bytes of an
+extracted image are not portable across builds. Pinning them was tried and failed in CI, which is
+how TD-007 came to be written down.
 """
 
 from __future__ import annotations
@@ -25,36 +31,6 @@ from finepdf_to_images.pipeline import ExtractionResult, run_extract
 pytestmark = pytest.mark.integration
 
 PDF_DIR = pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "pdfs"
-
-#: Pinned expected output: (sha256, width, height, byte_size, mime) per image, in document order.
-#:
-#: These are the actual published artifact bytes. The fixtures store raw FlateDecode samples and
-#: pypdf/Pillow re-encode them to PNG, so the artifact's identity is a function of those two
-#: libraries -- which is exactly why they are pinned exactly in pyproject.toml and why these hashes
-#: are written down. Without them a Pillow bump would silently change every image sha256, every
-#: content-addressed path and the manifest digest, and no test would notice.
-#:
-#: If one of these fails after a dependency bump, that is the test working. Re-pin deliberately.
-GOLDEN_IMAGES: dict[str, list[tuple[str, int, int, int, str]]] = {
-    "two-images.pdf": [
-        ("de33ddc09a0ba9b83128b6b59461e3be59299575eb68ccf2c03984b504f9fa9c", 2, 2, 73, "image/png"),
-        ("4aa84276a014c44690507ec04ee57a2569d07e0310ad1fc6b09f0e71db48495c", 3, 2, 77, "image/png"),
-    ],
-    "duplicate-images.pdf": [
-        ("21a452d2648c566eefa2cc56e9bb27ed9975e4403e34183ed629351af6f2bb42", 2, 2, 76, "image/png"),
-        ("21a452d2648c566eefa2cc56e9bb27ed9975e4403e34183ed629351af6f2bb42", 2, 2, 76, "image/png"),
-    ],
-    "rotated-page.pdf": [
-        ("de33ddc09a0ba9b83128b6b59461e3be59299575eb68ccf2c03984b504f9fa9c", 2, 2, 73, "image/png"),
-        ("4aa84276a014c44690507ec04ee57a2569d07e0310ad1fc6b09f0e71db48495c", 3, 2, 77, "image/png"),
-    ],
-    "two-pages.pdf": [
-        ("de33ddc09a0ba9b83128b6b59461e3be59299575eb68ccf2c03984b504f9fa9c", 2, 2, 73, "image/png"),
-        ("4aa84276a014c44690507ec04ee57a2569d07e0310ad1fc6b09f0e71db48495c", 3, 2, 77, "image/png"),
-        ("de33ddc09a0ba9b83128b6b59461e3be59299575eb68ccf2c03984b504f9fa9c", 2, 2, 73, "image/png"),
-        ("4aa84276a014c44690507ec04ee57a2569d07e0310ad1fc6b09f0e71db48495c", 3, 2, 77, "image/png"),
-    ],
-}
 
 
 def pdf(name: str) -> bytes:
@@ -81,17 +57,53 @@ def test_a_pdf_with_two_images_yields_two_deterministic_artifacts(
     assert images[0].data != images[1].data
 
 
-@pytest.mark.parametrize("name", sorted(GOLDEN_IMAGES))
-def test_extracted_bytes_match_their_pinned_hashes(
-    extractor: PypdfImageExtractor, name: str
+def pixel_digest(data: bytes) -> str:
+    """SHA-256 of an image's decoded pixels, independent of how the file was encoded."""
+    from io import BytesIO
+
+    from PIL import Image
+
+    with Image.open(BytesIO(data)) as decoded:
+        return sha256_hex(decoded.convert("RGB").tobytes())
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("two-images.pdf", [(2, 2, (255, 0, 0)), (3, 2, (0, 0, 255))]),
+        ("duplicate-images.pdf", [(2, 2, (0, 255, 0)), (2, 2, (0, 255, 0))]),
+        ("rotated-page.pdf", [(2, 2, (255, 0, 0)), (3, 2, (0, 0, 255))]),
+        (
+            "two-pages.pdf",
+            [(2, 2, (255, 0, 0)), (3, 2, (0, 0, 255))] * 2,
+        ),
+    ],
+)
+def test_extracted_pixels_match_the_fixture_that_produced_them(
+    extractor: PypdfImageExtractor,
+    name: str,
+    expected: list[tuple[int, int, tuple[int, int, int]]],
 ) -> None:
-    """REGRESSION: the determinism tests only compared two runs in the same process, so a Pillow
-    bump would have changed every published sha256 without failing anything."""
-    actual = [
-        (sha256_hex(i.data), i.width, i.height, len(i.data), i.mime)
-        for i in extractor.extract(pdf(name))
-    ]
-    assert actual == GOLDEN_IMAGES[name]
+    """Golden assertion over the image *content*, which is portable.
+
+    REGRESSION: the determinism tests only compared two runs in the same process, so a decoding
+    change would have gone unnoticed. Pinning the *encoded* hashes instead was tried and failed in
+    CI, because PNG bytes depend on the Pillow wheel's deflate implementation -- which is precisely
+    the limitation TD-007 records.
+    """
+    images = extractor.extract(pdf(name))
+    actual = [(i.width, i.height, i.mime) for i in images]
+    assert actual == [(w, h, "image/png") for w, h, _ in expected]
+    for image, (width, height, colour) in zip(images, expected, strict=True):
+        assert pixel_digest(image.data) == sha256_hex(bytes(colour) * (width * height))
+
+
+def test_identical_source_samples_produce_identical_artifacts(
+    extractor: PypdfImageExtractor,
+) -> None:
+    """Deduplication rests on this: the same picture twice must hash the same."""
+    images = extractor.extract(pdf("duplicate-images.pdf"))
+    assert sha256_hex(images[0].data) == sha256_hex(images[1].data)
 
 
 def test_extraction_is_byte_identical_across_runs(extractor: PypdfImageExtractor) -> None:

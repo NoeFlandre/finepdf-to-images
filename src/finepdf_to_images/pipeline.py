@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from finepdf_to_images.adapters.images import ImageExtractor
+from finepdf_to_images.adapters.images import ImageExtractor, encoder_versions
 from finepdf_to_images.adapters.retrieval import Transport, TransportError
 from finepdf_to_images.adapters.source import ShardReader
 from finepdf_to_images.adapters.storage import read_bytes, write_bytes
@@ -512,6 +512,9 @@ def run_extract(
     manifest: dict[str, Any] = {
         "schema_version": 1,
         "stage": "extract",
+        # The image bytes are not portable across Pillow builds, so a run has to say what
+        # produced it. See TD-007.
+        "encoder": encoder_versions(),
         "counts": {
             "documents": len(document_rows),
             "documents_with_images": with_images,

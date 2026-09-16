@@ -108,13 +108,21 @@ malformed bytes, and a truncated file.
 uv run python tests/fixtures/build_pdf_fixtures.py
 ```
 
-### Pinned hashes
+### What is pinned, and what cannot be
 
 The fixtures store raw `FlateDecode` samples, and **pypdf and Pillow re-encode them to PNG** — so
 the published artifact's bytes, its `sha256`, its content-addressed path and the manifest digest are
-all a function of those two libraries. They are therefore pinned to exact versions in
-`pyproject.toml`, and the expected hashes are written down in `GOLDEN_IMAGES`.
+all a function of those two libraries. Both are pinned to **exact** versions in `pyproject.toml`.
 
-Without that, a Pillow bump would silently change every image in the dataset and no test would
-notice. If one of those hashes fails after a dependency bump, the test is working; re-pin
-deliberately.
+That is still not enough for portability. PNG encoding calls deflate, and the result depends on
+which implementation the installed wheel links: this project's macOS wheel uses **zlib-ng**, the
+Linux wheel in CI uses **plain zlib**, and they emit different bytes for identical pixels. Pinning
+the encoded hashes was tried and failed in CI — which is how [TD-007](technical-debt.md) came to be
+written down.
+
+So the golden tests assert the **decoded pixels**, which are portable, along with dimensions, media
+type, count and ordering. Every extract manifest records an `encoder` block — pypdf version, Pillow
+version, Pillow's zlib build — so a published run says what produced it.
+
+**The consequence to be aware of:** every other stage in this pipeline is byte-identical across
+machines. This one is not.
