@@ -33,3 +33,8 @@ or a Hugging Face token.
 Every stage is expected to be reproducible byte for byte from the same pinned inputs: stable
 ordering, canonical JSON, SHA-256 content addressing, and an explicit sampling seed. See
 [Quality gates](quality.md).
+
+**One exception, and it is worth knowing about.** Extracted *image* bytes are not portable across
+machines: Pillow re-encodes them to PNG, and PNG encoding depends on which deflate implementation
+the installed wheel links. Same pixels, different bytes, different `sha256`, different path. Every
+other stage is byte-identical. See [TD-007](technical-debt.md).

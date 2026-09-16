@@ -81,3 +81,58 @@ fetches a few dozen public documents needs.
 **Trigger.** Before this pipeline is ever pointed at untrusted URLs from inside a network with
 anything worth reaching, or run as a service. Until then the exposure is a developer machine
 fetching public PDFs.
+
+## TD-007 — extracted image bytes are not portable across Pillow builds
+
+**State.** Embedded images that are not already in a standard format are re-encoded to PNG by
+Pillow. PNG encoding calls deflate, and the result depends on which implementation the installed
+wheel was built against: this project's macOS wheel links **zlib-ng**, the Linux wheel in CI links
+**plain zlib**, and they produce different bytes for identical pixels.
+
+Consequently the same pipeline, on the same inputs, with the same pinned dependency versions,
+produces **different image `sha256` values, different content-addressed paths and a different
+`images_digest`** on a different platform. Everything else in the pipeline — selection, scoring,
+retrieval manifests, PDF artifacts — is genuinely byte-identical; this stage is the exception.
+
+**How it was found.** Golden tests pinning the encoded hashes passed locally and failed in CI.
+That is the test doing its job.
+
+**What is done about it.** The golden tests assert the **decoded pixels**, which are portable. Every
+extract manifest records `encoder`: the pypdf version, the Pillow version and Pillow's zlib build,
+so a published run says what produced it.
+
+**Why it is not simply fixed.** The options all cost something: encoding at `compress_level=0`
+removes the variance but inflates a 1241×1755 image from ~200 KB to ~6.5 MB; publishing the PDF's
+original embedded stream bytes is faithful and portable but for raw-sample images is not a viewable
+file; vendoring an encoder is disproportionate for a pilot.
+
+**Trigger.** Before anyone relies on image hashes to compare two runs made on different machines,
+or before the published dataset is regenerated on a different platform and the artifact paths
+change. If that matters more than file size, publish the original embedded streams and record the
+format per image.
+
+## TD-008 — inline images are decoded before they can be counted
+
+**State.** `max_images` is checked against the images a page *declares*, before this project decodes
+any of them. That bounds image XObjects. It does not bound **inline** images — the `BI`/`ID`/`EI`
+operators inside a content stream — because pypdf decodes each one in order to name it, inside the
+same call that lists a page's images. A hand-built **1.4 KB** document carrying 300 flate-compressed
+600×600 inline images peaks at roughly **300 MB** of resident memory before the limit fires. That is
+a decompression bomb, and the input size bound from the retrieval stage does not help.
+
+**What is done about it.** `max_pages` (default 300) bounds how many pages can do this, since each
+page is parsed whether or not it contains images. The per-page exposure remains.
+
+**Why it is not simply fixed.** Bounding a single page means not using pypdf's content-stream
+parser — either pre-scanning the raw stream for inline-image operators before handing the page over,
+or replacing the parser. Both are disproportionate for a pilot that fetches a few dozen public
+documents under a 25 MB cap.
+
+**How it was found.** An independent review measured it against the code that had just "fixed" the
+XObject case. The regression test written at that time asserted only that *our* decode path did not
+run, and could not observe decoding inside pypdf — it passed against the vulnerable code. That test
+now says so in its own docstring.
+
+**Trigger.** Before this stage is run over untrusted documents at scale, unattended, or anywhere a
+300 MB spike per document matters. A per-process memory limit would be a cheaper mitigation than
+replacing the parser.
