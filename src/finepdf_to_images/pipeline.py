@@ -7,12 +7,15 @@ belongs in :mod:`finepdf_to_images.domain`, where it can be tested without I/O.
 from __future__ import annotations
 
 import pathlib
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from finepdf_to_images.adapters.source import ShardReader
 from finepdf_to_images.adapters.storage import write_bytes
-from finepdf_to_images.domain.serialization import canonical_bytes, canonical_jsonl
+from finepdf_to_images.domain.scoring import score as score_text
+from finepdf_to_images.domain.scoring import vocabulary_summary
+from finepdf_to_images.domain.serialization import canonical_bytes, canonical_jsonl, content_digest
 from finepdf_to_images.domain.source import (
     SELECTED_COLUMNS,
     SamplingSpec,
@@ -25,6 +28,7 @@ from finepdf_to_images.domain.source import (
 
 MANIFEST_NAME = "manifest.json"
 RECORDS_NAME = "records.jsonl"
+SCORED_NAME = "scored.jsonl"
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,4 +81,51 @@ def run_select(
         selected=len(selected),
         rows_fetched=window.rows_fetched,
         row_groups_read=window.row_groups_read,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ScoringResult:
+    manifest: dict[str, Any]
+    manifest_path: pathlib.Path
+    scored_path: pathlib.Path
+    scored: int
+    relevant: int
+
+
+def run_score(*, records: Sequence[Mapping[str, Any]], out_dir: pathlib.Path) -> ScoringResult:
+    """Score already-selected records for agriculture relevance.
+
+    Takes the records rather than a path: reading them is the caller's business, and keeping this
+    function over plain data is what lets the whole stage be tested without a filesystem.
+    """
+    rows: list[dict[str, Any]] = []
+    relevant = 0
+    for record in records:
+        result = score_text(str(record.get("text", "")), language=str(record.get("language", "")))
+        relevant += int(result.relevant)
+        rows.append(
+            {
+                "row_index": record.get("row_index"),
+                "row_id": record.get("row_id"),
+                "url": record.get("url"),
+                "relevance": result.as_dict(),
+            }
+        )
+
+    manifest: dict[str, Any] = {
+        "schema_version": 1,
+        "stage": "score",
+        "vocabulary": vocabulary_summary(),
+        "counts": {"scored": len(rows), "relevant": relevant},
+        "scored_digest": content_digest(rows),
+    }
+    scored_path = write_bytes(out_dir / SCORED_NAME, canonical_jsonl(rows))
+    manifest_path = write_bytes(out_dir / MANIFEST_NAME, canonical_bytes(manifest) + b"\n")
+    return ScoringResult(
+        manifest=manifest,
+        manifest_path=manifest_path,
+        scored_path=scored_path,
+        scored=len(rows),
+        relevant=relevant,
     )

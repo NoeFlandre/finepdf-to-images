@@ -6,9 +6,11 @@ than an obvious failure, because it looks like a successful run.
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import tempfile
+from typing import Any
 
 
 def write_bytes(path: pathlib.Path, data: bytes) -> pathlib.Path:
@@ -33,6 +35,13 @@ def write_bytes(path: pathlib.Path, data: bytes) -> pathlib.Path:
 
 def read_bytes(path: pathlib.Path) -> bytes:
     return path.read_bytes()
+
+
+def read_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:
+    """Read a canonical JSONL file back into plain data."""
+    if not path.is_file():
+        raise FileNotFoundError(f"no such file: {path}")
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
 
 def _chmod_to_umask(path: pathlib.Path) -> None:
