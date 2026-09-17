@@ -336,9 +336,11 @@ def test_the_card_has_valid_yaml_front_matter() -> None:
     assert isinstance(meta, dict)
     assert meta["license"] == "odc-by"
     assert meta["configs"] == [
-        {"config_name": "documents", "data_files": DOCUMENTS_FILE},
-        {"config_name": "images", "data_files": IMAGES_FILE},
+        {"config_name": "documents", "data_files": "data/documents.jsonl"},
+        {"config_name": "images", "data_files": "data/images.jsonl"},
     ]
+    assert DOCUMENTS_FILE == "data/documents.jsonl"
+    assert IMAGES_FILE == "data/images.jsonl"
 
 
 def test_the_card_is_deterministic() -> None:
