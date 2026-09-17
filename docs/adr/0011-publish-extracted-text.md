@@ -23,7 +23,9 @@ Redistributing this text is legally defensible provided that the ODC-BY attribut
    when assembling published document rows (`build_document_rows` and `_document_row`). A mismatch
    raises `PublicationError`.
 3. **Enforce hard byte cap in domain:** Enforce a hard ceiling on total published text bytes across all
-   documents (`MAX_DOCUMENT_TEXT_BYTES = 50 * 1024 * 1024`, 50 MB). The 1000-row pilot yields ~24 MB;
+   documents (`MAX_DOCUMENT_TEXT_BYTES = 50 * 1024 * 1024`, 50 MB), counted across every file the
+   plan publishes — the derived splits of ADR-0012 republish the same text. The 1000-row pilot
+   yields ~30 MB across the three document files;
    the cap prevents unbounded text dumps at upload time.
 4. **Attribution obligation:** Explicitly state the ODC-BY attribution obligation in `SOURCE_ATTRIBUTION`
    and the generated dataset card (`README.md`).

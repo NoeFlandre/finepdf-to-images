@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -25,6 +26,7 @@ from finepdf_to_images.domain.publication import (
     build_image_rows,
     build_manifest,
     build_plan,
+    content_digest,
     derive_relevant_rows,
     derive_retrieved_rows,
     is_noop,
@@ -195,14 +197,54 @@ def test_the_manifest_records_source_sampling_and_counts() -> None:
     }
     assert manifest["splits"] == {
         "documents": {
-            "all": 2,
-            "relevant": 1,
-            "retrieved": 1,
+            "all": {
+                "path": DOCUMENTS_FILE,
+                "count": 2,
+                "digest": manifest["documents_digest"],
+            },
+            "relevant": {
+                "path": DOCUMENTS_RELEVANT_FILE,
+                "count": 1,
+                "digest": manifest["documents_relevant_digest"],
+            },
+            "retrieved": {
+                "path": DOCUMENTS_RETRIEVED_FILE,
+                "count": 1,
+                "digest": manifest["documents_retrieved_digest"],
+            },
         },
         "images": {
-            "train": 1,
+            "train": {
+                "path": IMAGES_FILE,
+                "count": 1,
+                "digest": manifest["images_digest"],
+            },
         },
     }
+
+
+def test_the_manifest_records_deterministic_split_digests() -> None:
+    documents, images, manifest = assembled()
+    relevant = derive_relevant_rows(documents)
+    retrieved = derive_retrieved_rows(documents)
+
+    assert manifest["documents_digest"] == content_digest(list(documents))
+    assert manifest["documents_relevant_digest"] == content_digest(relevant)
+    assert manifest["documents_retrieved_digest"] == content_digest(retrieved)
+    assert manifest["images_digest"] == content_digest(list(images))
+
+    for key in (
+        "documents_digest",
+        "documents_relevant_digest",
+        "documents_retrieved_digest",
+        "images_digest",
+    ):
+        digest = manifest[key]
+        assert isinstance(digest, str)
+        assert len(digest) == 64
+        assert re.fullmatch(r"[0-9a-f]{64}", digest)
+
+    assert manifest["documents_digest"] != manifest["documents_relevant_digest"]
 
 
 def test_the_manifest_says_whether_source_bytes_are_republished() -> None:
@@ -373,7 +415,12 @@ def test_the_card_has_valid_yaml_front_matter() -> None:
                 {"split": "retrieved", "path": "data/documents_retrieved.jsonl"},
             ],
         },
-        {"config_name": "images", "data_files": "data/images.jsonl"},
+        {
+            "config_name": "images",
+            "data_files": [
+                {"split": "train", "path": "data/images.jsonl"},
+            ],
+        },
     ]
     assert DOCUMENTS_FILE == "data/documents.jsonl"
     assert DOCUMENTS_RELEVANT_FILE == "data/documents_relevant.jsonl"
@@ -557,6 +604,50 @@ def test_build_plan_enforces_max_document_text_bytes() -> None:
         )
 
 
+def test_the_text_cap_counts_every_file_the_plan_publishes() -> None:
+    """REGRESSION: the cap measured the ``all`` set only, while the plan writes the text 3x.
+
+    A row that is relevant and retrieved is republished in both derived splits, so its text is
+    published three times. Counting it once let a publication exceed the cap threefold: with the
+    pilot's real numbers the check reported 24.7 MB against 30.1 MB actually uploaded.
+
+    Here each row's text is just over a third of the cap. One copy fits; three do not.
+    """
+    _, _, manifest = assembled()
+    third = MAX_DOCUMENT_TEXT_BYTES // 3 + 1
+    text = "x" * third
+    documents = [
+        {
+            "row_id": "r1",
+            "text": text,
+            "text_sha256": sha256_hex(text.encode("utf-8")),
+            "relevant": True,
+            "retrieved": True,
+        }
+    ]
+    assert len(text.encode("utf-8")) <= MAX_DOCUMENT_TEXT_BYTES, "one copy must fit under the cap"
+
+    with pytest.raises(PublicationError, match="across 3 published document file"):
+        build_plan(repo="a/b", manifest=manifest, documents=documents, images=[])
+
+
+def test_a_document_in_no_split_is_counted_once_against_the_cap() -> None:
+    """The inverse: a row in no split is written once, so it must not be triple-counted."""
+    _, _, manifest = assembled()
+    text = "x" * (MAX_DOCUMENT_TEXT_BYTES // 2)
+    documents = [
+        {
+            "row_id": "r1",
+            "text": text,
+            "text_sha256": sha256_hex(text.encode("utf-8")),
+            "relevant": False,
+            "retrieved": False,
+        }
+    ]
+    plan = build_plan(repo="a/b", manifest=manifest, documents=documents, images=[])
+    assert len(plan.files) == 6
+
+
 def test_the_card_states_odc_by_attribution_obligation_for_text() -> None:
     _, _, manifest = assembled()
     card = render_card(manifest)
@@ -602,6 +693,20 @@ def test_the_card_documents_splits_and_files() -> None:
     card = render_card(manifest)
     assert DOCUMENTS_RELEVANT_FILE in card
     assert DOCUMENTS_RETRIEVED_FILE in card
-    assert "split: `all`" in card or "split `all`" in card or "`all`" in card
-    assert "split: `relevant`" in card or "split `relevant`" in card or "`relevant`" in card
-    assert "split: `retrieved`" in card or "split `retrieved`" in card or "`retrieved`" in card
+    assert "| `documents` | `all` | 2 |" in card
+    assert "| `documents` | `relevant` | 1 |" in card
+    assert "| `documents` | `retrieved` | 1 |" in card
+    assert "| `images` | `train` | 1 |" in card
+    assert f"| `{DOCUMENTS_FILE}` | one row per scored document (split: `all`) |" in card
+    assert (
+        f"| `{DOCUMENTS_RELEVANT_FILE}` | documents judged relevant to agriculture"
+        " (split: `relevant`) |" in card
+    )
+    assert (
+        f"| `{DOCUMENTS_RETRIEVED_FILE}` | documents whose source PDF was retrieved"
+        " (split: `retrieved`) |" in card
+    )
+    assert f"- `documents` (`all`): `{manifest['documents_digest'][:16]}…`" in card
+    assert f"- `documents` (`relevant`): `{manifest['documents_relevant_digest'][:16]}…`" in card
+    assert f"- `documents` (`retrieved`): `{manifest['documents_retrieved_digest'][:16]}…`" in card
+    assert f"- `images` (`train`): `{manifest['images_digest'][:16]}…`" in card

@@ -278,6 +278,10 @@ def build_manifest(
     """
     relevant_docs = derive_relevant_rows(documents)
     retrieved_docs = derive_retrieved_rows(documents)
+    doc_digest = content_digest(list(documents))
+    relevant_digest = content_digest(relevant_docs)
+    retrieved_digest = content_digest(retrieved_docs)
+    img_digest = content_digest(list(images))
     return {
         "schema_version": SCHEMA_VERSION,
         "source": dict(source),
@@ -287,22 +291,38 @@ def build_manifest(
         "counts": _counts(documents, images),
         "splits": {
             "documents": {
-                "all": len(documents),
-                "relevant": len(relevant_docs),
-                "retrieved": len(retrieved_docs),
+                "all": {
+                    "path": DOCUMENTS_FILE,
+                    "count": len(documents),
+                    "digest": doc_digest,
+                },
+                "relevant": {
+                    "path": DOCUMENTS_RELEVANT_FILE,
+                    "count": len(relevant_docs),
+                    "digest": relevant_digest,
+                },
+                "retrieved": {
+                    "path": DOCUMENTS_RETRIEVED_FILE,
+                    "count": len(retrieved_docs),
+                    "digest": retrieved_digest,
+                },
             },
             "images": {
-                "train": len(images),
+                "train": {
+                    "path": IMAGES_FILE,
+                    "count": len(images),
+                    "digest": img_digest,
+                },
             },
         },
         "publishes_source_bytes": any(
             row.get("disposition") == "publish-artifact" for row in documents
         ),
         "policy": policy.policy_summary(),
-        "documents_digest": content_digest(list(documents)),
-        "documents_relevant_digest": content_digest(relevant_docs),
-        "documents_retrieved_digest": content_digest(retrieved_docs),
-        "images_digest": content_digest(list(images)),
+        "documents_digest": doc_digest,
+        "documents_relevant_digest": relevant_digest,
+        "documents_retrieved_digest": retrieved_digest,
+        "images_digest": img_digest,
     }
 
 
@@ -332,12 +352,22 @@ def _check_no_byte_publication(documents: Sequence[Mapping[str, Any]]) -> None:
         )
 
 
-def _check_text_byte_cap(documents: Sequence[Mapping[str, Any]]) -> None:
-    total_text_bytes = sum(len(str(row.get("text") or "").encode("utf-8")) for row in documents)
+def _check_text_byte_cap(*published: Sequence[Mapping[str, Any]]) -> None:
+    """Bound the text bytes the plan actually publishes, counting every file it writes.
+
+    Each argument is one published document file. The derived splits republish the *same* rows,
+    so a document that is relevant and retrieved carries its text three times. Measuring only the
+    ``all`` set -- as this did before the splits existed -- under-counts the publication by that
+    duplication factor: the pilot publishes 30.1 MB of text while such a check reports 24.7 MB,
+    and a run where most rows are relevant could exceed the cap threefold and still pass.
+    """
+    total_text_bytes = sum(
+        len(str(row.get("text") or "").encode("utf-8")) for rows in published for row in rows
+    )
     if total_text_bytes > MAX_DOCUMENT_TEXT_BYTES:
         raise PublicationError(
-            f"total published text bytes {total_text_bytes} exceeds cap of "
-            f"{MAX_DOCUMENT_TEXT_BYTES} bytes"
+            f"total published text bytes {total_text_bytes} across {len(published)} published "
+            f"document file(s) exceeds cap of {MAX_DOCUMENT_TEXT_BYTES} bytes"
         )
 
 
@@ -351,9 +381,9 @@ def build_plan(
     """Everything the publication consists of, as bytes, without touching the Hub."""
     _validate_repo(repo)
     _check_no_byte_publication(documents)
-    _check_text_byte_cap(documents)
     relevant_docs = derive_relevant_rows(documents)
     retrieved_docs = derive_retrieved_rows(documents)
+    _check_text_byte_cap(documents, relevant_docs, retrieved_docs)
     card = render_card(manifest)
     files = (
         PublishFile(CARD_FILE, card.encode("utf-8")),
@@ -418,7 +448,9 @@ configs:
       - split: retrieved
         path: {DOCUMENTS_RETRIEVED_FILE}
   - config_name: images
-    data_files: {IMAGES_FILE}
+    data_files:
+      - split: train
+        path: {IMAGES_FILE}
 license: odc-by
 task_categories:
 - text-classification
@@ -481,8 +513,11 @@ limit requires — never the shard, never the corpus.
 | `{DOCUMENTS_RETRIEVED_FILE}` | documents whose source PDF was retrieved (split: `retrieved`) |
 | `{IMAGES_FILE}` | one row per extracted image |
 
-Digests: documents `{manifest["documents_digest"][:16]}…`, images
-`{manifest["images_digest"][:16]}…`. Both are SHA-256 over the canonical JSON of the rows.
+Digests (SHA-256 over canonical JSON rows):
+- `documents` (`all`): `{manifest["documents_digest"][:16]}…`
+- `documents` (`relevant`): `{manifest["documents_relevant_digest"][:16]}…`
+- `documents` (`retrieved`): `{manifest["documents_retrieved_digest"][:16]}…`
+- `images` (`train`): `{manifest["images_digest"][:16]}…`
 
 ### `{DOCUMENTS_FILE}`
 

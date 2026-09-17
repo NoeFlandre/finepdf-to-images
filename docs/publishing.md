@@ -53,7 +53,10 @@ and image binaries, the extracted text is part of FinePDFs itself (licensed ODC-
 makes the relevance score and `matched_terms` auditable without re-downloading the source shard.
 The published `text_sha256` is verified against the UTF-8 text digest at publication time so that
 the published text cannot drift from what was scored. Total published text bytes are strictly bounded
-in the domain by `MAX_DOCUMENT_TEXT_BYTES` (50 MB cap).
+in the domain by `MAX_DOCUMENT_TEXT_BYTES` (50 MB cap), counted across **every file the plan
+publishes**. The derived splits republish the same rows, so a document that is relevant and
+retrieved carries its text three times; measuring only the `all` set would under-count the
+publication by that factor — the pilot uploads 30.1 MB of text where such a count reports 24.7 MB.
 
 **No source PDF or image bytes are uploaded.** The policy ships no curated allow-list entries, so
 every artifact resolves to `metadata-only`: hashes and provenance, not the documents. The manifest

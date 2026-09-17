@@ -26,4 +26,11 @@ Hugging Face dataset configurations natively support multiple named splits under
 - Downstream users can directly load desired subsets with `load_dataset("NoeFlandre/finepdf-to-images-poc", "documents", split="relevant")` or view them independently in the Hugging Face Dataset Viewer.
 - Auditability is preserved: `all` retains all negative, refused, and unretrieved rows.
 - Canonical JSONL sorting and source shard ordering are preserved across all split files.
+- **The published text payload is duplicated.** A document that is relevant and retrieved is
+  written into all three document files, so its text is uploaded three times. This is an accepted
+  cost of native split support — the alternative, splits holding only row ids, would make
+  `load_dataset(..., split="relevant")` useless without a join. It does mean the text byte cap of
+  ADR-0011 must count every published file rather than the `all` set alone; counting once let the
+  pilot report 24.7 MB against 30.1 MB actually uploaded, and would have allowed a relevant-heavy
+  run to exceed the cap threefold while passing.
 - The pipeline architecture remains hexagonal and pure: `run_publish` requires no adapter churn as it publishes all files defined in `PublicationPlan`.
