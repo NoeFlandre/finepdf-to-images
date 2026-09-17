@@ -441,3 +441,22 @@ def test_cli_reports_a_truncated_select_manifest_by_name(
     args[args.index("--select-manifest") + 1] = str(truncated)
     assert run_cli(["publish", *args]) == 1
     assert "no usable 'sampling' block" in capsys.readouterr().err
+
+
+def test_cli_names_the_missing_field_in_a_truncated_source_block(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The card and commit message index source["path"] and friends directly; a bare
+    `KeyError: 'path'` printed without the filename is a worse diagnostic than naming it."""
+    from finepdf_to_images import cli
+
+    monkeypatch.setattr(cli, "HUB_FACTORY", FakeHub)
+    args = staged_inputs(tmp_path)
+    truncated = tmp_path / "partial.json"
+    source = {key: value for key, value in SOURCE.items() if key != "path"}
+    truncated.write_text(
+        json.dumps({"stage": "select", "source": source, "sampling": SAMPLING}), encoding="utf-8"
+    )
+    args[args.index("--select-manifest") + 1] = str(truncated)
+    assert run_cli(["publish", *args]) == 1
+    assert "'source' is missing path" in capsys.readouterr().err

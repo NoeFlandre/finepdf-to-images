@@ -127,9 +127,15 @@ def _cmd_retrieve(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-#: Blocks a stage manifest must carry for the later stages to use it. Checked on read so a
-#: truncated file names itself rather than surfacing as a KeyError deep in card rendering.
-_REQUIRED_MANIFEST_KEYS: dict[str, tuple[str, ...]] = {"select": ("source", "sampling")}
+#: Blocks and inner keys a stage manifest must carry for the later stages to use it. Checked on
+#: read so a truncated file names itself rather than surfacing as a KeyError deep in card
+#: rendering.
+_REQUIRED_MANIFEST_FIELDS: dict[str, dict[str, tuple[str, ...]]] = {
+    "select": {
+        "source": ("dataset", "revision", "config", "split", "shard", "path"),
+        "sampling": ("limit", "seed", "strategy"),
+    }
+}
 
 
 def _stage_manifest(path: pathlib.Path, stage: str) -> Mapping[str, Any]:
@@ -137,10 +143,18 @@ def _stage_manifest(path: pathlib.Path, stage: str) -> Mapping[str, Any]:
     manifest = json.loads(read_bytes(path))
     if not isinstance(manifest, dict) or manifest.get("stage") != stage:
         raise ValueError(f"{path} is not a {stage} manifest")
-    for required in _REQUIRED_MANIFEST_KEYS.get(stage, ()):
-        if not isinstance(manifest.get(required), dict):
-            raise ValueError(f"{path} has no usable {required!r} block")
+    _require_blocks(manifest, path, stage)
     return manifest
+
+
+def _require_blocks(manifest: Mapping[str, Any], path: pathlib.Path, stage: str) -> None:
+    """Check the blocks and inner keys the later stages index directly."""
+    for block, fields in _REQUIRED_MANIFEST_FIELDS.get(stage, {}).items():
+        if not isinstance(manifest.get(block), dict):
+            raise ValueError(f"{path} has no usable {block!r} block")
+        absent = [field for field in fields if field not in manifest[block]]
+        if absent:
+            raise ValueError(f"{path}: {block!r} is missing {', '.join(absent)}")
 
 
 def _source_from(path: pathlib.Path) -> Mapping[str, Any]:
@@ -345,8 +359,9 @@ def _add_publish_parser(subparsers: argparse._SubParsersAction) -> None:
         help="publish the bounded pilot result to a Hugging Face dataset",
         description=(
             "Assemble the published rows, manifest and dataset card from the pilot output and "
-            "upload them in one commit. Without --apply this is a dry run that reports the exact "
-            "files and counts and never touches the Hub. Publishing the same pilot output twice "
+            "upload them in one commit. Without --apply this is a dry run: it reads the Hub to "
+            "see whether the result is already there, reports the exact files and counts, and "
+            "changes nothing. Publishing the same pilot output twice "
             "is a no-op. The card is generated from the policy and vocabulary in code, so it "
             "cannot drift from the rules it describes."
         ),
@@ -362,7 +377,7 @@ def _add_publish_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="actually upload. Without this nothing on the Hub is touched.",
+        help="actually upload. Without this nothing on the Hub is written.",
     )
 
 

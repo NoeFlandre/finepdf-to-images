@@ -161,8 +161,3 @@ def _identity_of(entry: Any) -> str | None:
         return str(lfs.sha256)
     blob_id = getattr(entry, "blob_id", None)
     return str(blob_id) if blob_id else None
-
-
-def digests_of(files: tuple[PublishFile, ...]) -> dict[str, str]:
-    """Path -> SHA-256 for a plan's files, for comparing against a remote listing."""
-    return {file.path: file.sha256 for file in files}

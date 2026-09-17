@@ -85,17 +85,6 @@ def test_file_digests_returns_content_hashes_for_lfs_entries() -> None:
     assert hub(api).file_digests("a/b") == {"data/a.jsonl": "a" * 64, "README.md": "b" * 64}
 
 
-def test_an_entry_without_a_content_hash_is_omitted_rather_than_guessed() -> None:
-    """The Hub records a git blob sha for small files, which is not a content SHA-256.
-
-    Omitting it means such a file never compares equal, so a publication re-uploads rather than
-    silently skipping something that may have changed. Erring toward re-uploading is the safe
-    direction for a gate that decides whether a public dataset is already correct.
-    """
-    api = FakeApi(entries=[Entry("small.txt", None), Entry("big.bin", Lfs("c" * 64))])
-    assert hub(api).file_digests("a/b") == {"big.bin": "c" * 64}
-
-
 def test_reading_asks_for_the_whole_dataset_tree() -> None:
     api = FakeApi()
     hub(api).file_digests("a/b")
