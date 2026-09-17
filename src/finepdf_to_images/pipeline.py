@@ -35,6 +35,7 @@ from finepdf_to_images.domain.publication import (
     build_document_rows,
     build_image_rows,
     check_inputs_match_extraction,
+    check_text_byte_cap,
     cleared_pdf_digests,
     is_noop,
     stale_paths,
@@ -786,6 +787,7 @@ def _plan_publication(
         for digest, artifact in _artifacts_by_digest(artifacts, shipped_images).items()
     }
     dataset_rows = build_dataset_rows(document_rows, images, embeddable)
+    check_text_byte_cap(dataset_rows)
     dataset = encode_dataset(dataset_rows)
     # The card reports what the table holds, not what the scorer judged relevant. Those diverged
     # once documents without an image stopped being published, and the card said 52 where the

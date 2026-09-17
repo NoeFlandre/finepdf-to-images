@@ -588,24 +588,37 @@ def test_published_text_must_match_recorded_text_sha256() -> None:
 
 
 def test_total_text_byte_cap_enforced_at_boundary() -> None:
-    text_10_bytes = "0123456789"
-    scored = [
-        {
-            "row_index": 0,
-            "row_id": "row-1",
-            "url": "https://example.org/1.pdf",
-            "text": text_10_bytes,
-            "text_sha256": sha256_hex(text_10_bytes.encode("utf-8")),
-            "relevance": {},
-        }
-    ]
-    # Exactly at boundary: passes
-    rows = build_document_rows(scored=scored, retrieved=[], extracted=[], max_text_bytes=10)
-    assert len(rows) == 1
+    """Re-pointed from build_document_rows: the cap now measures the rows actually published."""
+    from finepdf_to_images.domain.publication import check_text_byte_cap
 
-    # Over boundary by 1 byte: fails
-    with pytest.raises(PublicationError, match="total published text bytes"):
-        build_document_rows(scored=scored, retrieved=[], extracted=[], max_text_bytes=9)
+    rows = [{"text": "0123456789"}]
+    check_text_byte_cap(rows, max_text_bytes=10)  # exactly at the boundary: passes
+
+    with pytest.raises(PublicationError, match="over the cap"):
+        check_text_byte_cap(rows, max_text_bytes=9)
+
+
+def test_the_cap_ignores_text_the_run_never_publishes() -> None:
+    """REGRESSION: a 5000-row sample was refused over 75 MB, almost all of it rejected documents.
+
+    The cap summed every *scored* row. Once only documents that were retrieved and yielded an
+    image reach the Hub, that counted text the publication never writes.
+    """
+    from finepdf_to_images.domain.publication import check_text_byte_cap
+
+    scored_but_unpublished = [{"text": "x" * 1000} for _ in range(100)]
+    published = [{"text": "y" * 10}]
+    assert sum(len(r["text"]) for r in scored_but_unpublished) > 50
+    check_text_byte_cap(published, max_text_bytes=50)
+
+
+def test_the_cap_counts_text_repeated_across_a_documents_images() -> None:
+    """One row per image repeats a document's text, and the cap must see every copy."""
+    from finepdf_to_images.domain.publication import check_text_byte_cap
+
+    rows = [{"text": "0123456789"} for _ in range(3)]
+    with pytest.raises(PublicationError, match="counts every"):
+        check_text_byte_cap(rows, max_text_bytes=25)
 
 
 def test_build_plan_enforces_max_document_text_bytes() -> None:
