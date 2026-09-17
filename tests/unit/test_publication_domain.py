@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -13,6 +14,8 @@ from finepdf_to_images.domain.publication import (
     CARD_FILE,
     DOCUMENT_FIELDS,
     DOCUMENTS_FILE,
+    DOCUMENTS_RELEVANT_FILE,
+    DOCUMENTS_RETRIEVED_FILE,
     IMAGE_FIELDS,
     IMAGES_FILE,
     MANIFEST_FILE,
@@ -23,6 +26,9 @@ from finepdf_to_images.domain.publication import (
     build_image_rows,
     build_manifest,
     build_plan,
+    content_digest,
+    derive_relevant_rows,
+    derive_retrieved_rows,
     is_noop,
     render_card,
 )
@@ -189,6 +195,56 @@ def test_the_manifest_records_source_sampling_and_counts() -> None:
         "images": 1,
         "unique_images": 1,
     }
+    assert manifest["splits"] == {
+        "documents": {
+            "all": {
+                "path": DOCUMENTS_FILE,
+                "count": 2,
+                "digest": manifest["documents_digest"],
+            },
+            "relevant": {
+                "path": DOCUMENTS_RELEVANT_FILE,
+                "count": 1,
+                "digest": manifest["documents_relevant_digest"],
+            },
+            "retrieved": {
+                "path": DOCUMENTS_RETRIEVED_FILE,
+                "count": 1,
+                "digest": manifest["documents_retrieved_digest"],
+            },
+        },
+        "images": {
+            "train": {
+                "path": IMAGES_FILE,
+                "count": 1,
+                "digest": manifest["images_digest"],
+            },
+        },
+    }
+
+
+def test_the_manifest_records_deterministic_split_digests() -> None:
+    documents, images, manifest = assembled()
+    relevant = derive_relevant_rows(documents)
+    retrieved = derive_retrieved_rows(documents)
+
+    assert manifest["documents_digest"] == content_digest(list(documents))
+    assert manifest["documents_relevant_digest"] == content_digest(relevant)
+    assert manifest["documents_retrieved_digest"] == content_digest(retrieved)
+    assert manifest["images_digest"] == content_digest(list(images))
+
+    for key in (
+        "documents_digest",
+        "documents_relevant_digest",
+        "documents_retrieved_digest",
+        "images_digest",
+    ):
+        digest = manifest[key]
+        assert isinstance(digest, str)
+        assert len(digest) == 64
+        assert re.fullmatch(r"[0-9a-f]{64}", digest)
+
+    assert manifest["documents_digest"] != manifest["documents_relevant_digest"]
 
 
 def test_the_manifest_says_whether_source_bytes_are_republished() -> None:
@@ -214,13 +270,15 @@ def test_the_manifest_has_no_timestamp() -> None:
 # --------------------------------------------------------------------------- plan
 
 
-def test_a_plan_contains_exactly_the_four_published_files() -> None:
+def test_a_publication_has_the_expected_files() -> None:
     documents, images, manifest = assembled()
     plan = build_plan(repo="a/b", manifest=manifest, documents=documents, images=images)
     assert [file.path for file in plan.files] == [
         CARD_FILE,
         MANIFEST_FILE,
         DOCUMENTS_FILE,
+        DOCUMENTS_RELEVANT_FILE,
+        DOCUMENTS_RETRIEVED_FILE,
         IMAGES_FILE,
     ]
     assert all(file.size > 0 for file in plan.files)
@@ -259,7 +317,17 @@ def test_a_publication_is_a_noop_when_every_file_already_matches() -> None:
     assert is_noop(plan, remote)
 
 
-@pytest.mark.parametrize("missing", [CARD_FILE, MANIFEST_FILE, DOCUMENTS_FILE, IMAGES_FILE])
+@pytest.mark.parametrize(
+    "missing",
+    [
+        CARD_FILE,
+        MANIFEST_FILE,
+        DOCUMENTS_FILE,
+        DOCUMENTS_RELEVANT_FILE,
+        DOCUMENTS_RETRIEVED_FILE,
+        IMAGES_FILE,
+    ],
+)
 def test_one_missing_or_changed_file_is_not_a_noop(missing: str) -> None:
     documents, images, manifest = assembled()
     plan = build_plan(repo="a/b", manifest=manifest, documents=documents, images=images)
@@ -339,10 +407,24 @@ def test_the_card_has_valid_yaml_front_matter() -> None:
     assert isinstance(meta, dict)
     assert meta["license"] == "odc-by"
     assert meta["configs"] == [
-        {"config_name": "documents", "data_files": "data/documents.jsonl"},
-        {"config_name": "images", "data_files": "data/images.jsonl"},
+        {
+            "config_name": "documents",
+            "data_files": [
+                {"split": "all", "path": "data/documents.jsonl"},
+                {"split": "relevant", "path": "data/documents_relevant.jsonl"},
+                {"split": "retrieved", "path": "data/documents_retrieved.jsonl"},
+            ],
+        },
+        {
+            "config_name": "images",
+            "data_files": [
+                {"split": "train", "path": "data/images.jsonl"},
+            ],
+        },
     ]
     assert DOCUMENTS_FILE == "data/documents.jsonl"
+    assert DOCUMENTS_RELEVANT_FILE == "data/documents_relevant.jsonl"
+    assert DOCUMENTS_RETRIEVED_FILE == "data/documents_retrieved.jsonl"
     assert IMAGES_FILE == "data/images.jsonl"
 
 
@@ -385,6 +467,8 @@ def test_a_plan_never_contains_source_bytes(count: int) -> None:
         CARD_FILE,
         MANIFEST_FILE,
         DOCUMENTS_FILE,
+        DOCUMENTS_RELEVANT_FILE,
+        DOCUMENTS_RETRIEVED_FILE,
         IMAGES_FILE,
     }
     assert not manifest["publishes_source_bytes"]
@@ -520,9 +604,112 @@ def test_build_plan_enforces_max_document_text_bytes() -> None:
         )
 
 
+def test_the_text_cap_counts_every_file_the_plan_publishes() -> None:
+    """REGRESSION: the cap measured the ``all`` set only, while the plan writes the text 3x.
+
+    A row that is relevant and retrieved is republished in both derived splits, so its text is
+    published three times. Counting it once let a publication exceed the cap threefold: with the
+    pilot's real numbers the check reported 24.7 MB against 30.1 MB actually uploaded.
+
+    Here each row's text is just over a third of the cap. One copy fits; three do not.
+    """
+    _, _, manifest = assembled()
+    third = MAX_DOCUMENT_TEXT_BYTES // 3 + 1
+    text = "x" * third
+    documents = [
+        {
+            "row_id": "r1",
+            "text": text,
+            "text_sha256": sha256_hex(text.encode("utf-8")),
+            "relevant": True,
+            "retrieved": True,
+        }
+    ]
+    assert len(text.encode("utf-8")) <= MAX_DOCUMENT_TEXT_BYTES, "one copy must fit under the cap"
+
+    with pytest.raises(PublicationError, match="across 3 published document file"):
+        build_plan(repo="a/b", manifest=manifest, documents=documents, images=[])
+
+
+def test_a_document_in_no_split_is_counted_once_against_the_cap() -> None:
+    """The inverse: a row in no split is written once, so it must not be triple-counted."""
+    _, _, manifest = assembled()
+    text = "x" * (MAX_DOCUMENT_TEXT_BYTES // 2)
+    documents = [
+        {
+            "row_id": "r1",
+            "text": text,
+            "text_sha256": sha256_hex(text.encode("utf-8")),
+            "relevant": False,
+            "retrieved": False,
+        }
+    ]
+    plan = build_plan(repo="a/b", manifest=manifest, documents=documents, images=[])
+    assert len(plan.files) == 6
+
+
 def test_the_card_states_odc_by_attribution_obligation_for_text() -> None:
     _, _, manifest = assembled()
     card = render_card(manifest)
     assert "ODC-BY" in card
     assert "HuggingFaceFW/finepdfs" in card
     assert "text" in card.lower()
+
+
+@given(
+    rows=st.lists(
+        st.fixed_dictionaries(
+            {
+                "row_index": st.integers(min_value=0, max_value=1000),
+                "row_id": st.text(min_size=1, max_size=20),
+                "relevant": st.booleans(),
+                "retrieved": st.booleans(),
+            }
+        ),
+        max_size=30,
+    )
+)
+def test_derived_splits_are_subsets_and_match_predicates(rows: list[dict[str, Any]]) -> None:
+    # No sort: the derived splits must preserve whatever order they are given, and asserting
+    # that against the generated order is the point. The sort this line used to perform keyed on
+    # `row_index is None`, which the strategy never generates -- a branch that could not run.
+    docs = rows
+    relevant = derive_relevant_rows(docs)
+    retrieved = derive_retrieved_rows(docs)
+
+    assert len(relevant) <= len(docs)
+    assert len(retrieved) <= len(docs)
+    assert all(r in docs for r in relevant)
+    assert all(r in docs for r in retrieved)
+
+    assert all(r["relevant"] is True for r in relevant)
+    assert len(relevant) == sum(1 for r in docs if r["relevant"])
+    assert [r["row_id"] for r in relevant] == [r["row_id"] for r in docs if r["relevant"]]
+
+    assert all(r["retrieved"] is True for r in retrieved)
+    assert len(retrieved) == sum(1 for r in docs if r["retrieved"])
+    assert [r["row_id"] for r in retrieved] == [r["row_id"] for r in docs if r["retrieved"]]
+
+
+def test_the_card_documents_splits_and_files() -> None:
+    _, _, manifest = assembled()
+    card = render_card(manifest)
+    assert DOCUMENTS_RELEVANT_FILE in card
+    assert DOCUMENTS_RETRIEVED_FILE in card
+    assert "| `documents` | `all` | 2 |" in card
+    assert "| `documents` | `relevant` | 1 |" in card
+    assert "| `documents` | `retrieved` | 1 |" in card
+    assert "| `images` | `train` | 1 |" in card
+    assert f"| `{DOCUMENTS_FILE}` | one row per scored document (split: `all`) |" in card
+    assert (
+        f"| `{DOCUMENTS_RELEVANT_FILE}` | documents judged relevant to agriculture"
+        " (split: `relevant`) |" in card
+    )
+    assert (
+        f"| `{DOCUMENTS_RETRIEVED_FILE}` | documents whose source PDF was retrieved"
+        " (split: `retrieved`) |" in card
+    )
+    assert f"- `documents` (`all`): `{manifest['documents_digest'][:16]}…`" in card
+    assert f"- `documents` (`relevant`): `{manifest['documents_relevant_digest'][:16]}…`" in card
+    assert f"- `documents` (`retrieved`): `{manifest['documents_retrieved_digest'][:16]}…`" in card
+    assert f"- `images` (`train`): `{manifest['images_digest'][:16]}…`" in card

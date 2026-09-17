@@ -87,11 +87,11 @@ something real. Current result:
 
 | | |
 | --- | --- |
-| mutants | 1409 |
-| killed | 1214 |
-| survived | 184 |
+| mutants | 1544 |
+| killed | 1352 |
+| survived | 181 |
 | skipped | 11 |
-| kill rate | **87%** |
+| kill rate | **88%** |
 
 It is **not** a merge gate. A kill rate is a conversation, not a pass/fail line: the honest
 response to a surviving mutant is sometimes a new test and sometimes "that mutant is equivalent",
@@ -120,9 +120,9 @@ The survivors were classified rather than ignored. Three classes mattered and we
 
 All three are covered in `tests/unit/test_mutation_survivors.py`, which names the mutant each test
 kills, and each test was checked by reintroducing its mutant by hand and watching it fail. That
-took the kill rate from 72% to 87%.
+took the kill rate from 72% to 88%.
 
-The remaining 184 are overwhelmingly **diagnostic-string mutations** — upper-casing a message,
+The remaining 181 are overwhelmingly **diagnostic-string mutations** — upper-casing a message,
 replacing it with `None`. Chasing those would turn the tests into a transcription of the source.
 Message *content* is asserted where it matters: a reason a caller matches on, a field name a user
 needs to act.

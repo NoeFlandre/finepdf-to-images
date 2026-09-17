@@ -38,6 +38,8 @@ _REPO_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,94}/[A-Za-z0-9][A-Za-z0-9.
 
 #: Files a publication always writes, in upload order.
 DOCUMENTS_FILE = "data/documents.jsonl"
+DOCUMENTS_RELEVANT_FILE = "data/documents_relevant.jsonl"
+DOCUMENTS_RETRIEVED_FILE = "data/documents_retrieved.jsonl"
 IMAGES_FILE = "data/images.jsonl"
 MANIFEST_FILE = "manifest.json"
 CARD_FILE = "README.md"
@@ -228,6 +230,16 @@ def _number(row: Mapping[str, Any], key: str) -> int:
     return int(value) if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
+def derive_relevant_rows(documents: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The subset of documents judged relevant by the scorer, in shard order."""
+    return [dict(row) for row in documents if bool(row.get("relevant"))]
+
+
+def derive_retrieved_rows(documents: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The subset of documents whose source PDF was successfully retrieved, in shard order."""
+    return [dict(row) for row in documents if bool(row.get("retrieved"))]
+
+
 def build_image_rows(images: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """The image index, reduced to the published fields and stably ordered."""
     rows = [
@@ -264,6 +276,12 @@ def build_manifest(
     Carries no timestamp: two publications of the same pilot output must produce the same bytes,
     or the idempotency claim is decided by the clock rather than by the data.
     """
+    relevant_docs = derive_relevant_rows(documents)
+    retrieved_docs = derive_retrieved_rows(documents)
+    doc_digest = content_digest(list(documents))
+    relevant_digest = content_digest(relevant_docs)
+    retrieved_digest = content_digest(retrieved_docs)
+    img_digest = content_digest(list(images))
     return {
         "schema_version": SCHEMA_VERSION,
         "source": dict(source),
@@ -271,12 +289,40 @@ def build_manifest(
         "vocabulary_version": vocabulary_version,
         "encoder": dict(encoder or {}),
         "counts": _counts(documents, images),
+        "splits": {
+            "documents": {
+                "all": {
+                    "path": DOCUMENTS_FILE,
+                    "count": len(documents),
+                    "digest": doc_digest,
+                },
+                "relevant": {
+                    "path": DOCUMENTS_RELEVANT_FILE,
+                    "count": len(relevant_docs),
+                    "digest": relevant_digest,
+                },
+                "retrieved": {
+                    "path": DOCUMENTS_RETRIEVED_FILE,
+                    "count": len(retrieved_docs),
+                    "digest": retrieved_digest,
+                },
+            },
+            "images": {
+                "train": {
+                    "path": IMAGES_FILE,
+                    "count": len(images),
+                    "digest": img_digest,
+                },
+            },
+        },
         "publishes_source_bytes": any(
             row.get("disposition") == "publish-artifact" for row in documents
         ),
         "policy": policy.policy_summary(),
-        "documents_digest": content_digest(list(documents)),
-        "images_digest": content_digest(list(images)),
+        "documents_digest": doc_digest,
+        "documents_relevant_digest": relevant_digest,
+        "documents_retrieved_digest": retrieved_digest,
+        "images_digest": img_digest,
     }
 
 
@@ -306,12 +352,22 @@ def _check_no_byte_publication(documents: Sequence[Mapping[str, Any]]) -> None:
         )
 
 
-def _check_text_byte_cap(documents: Sequence[Mapping[str, Any]]) -> None:
-    total_text_bytes = sum(len(str(row.get("text") or "").encode("utf-8")) for row in documents)
+def _check_text_byte_cap(*published: Sequence[Mapping[str, Any]]) -> None:
+    """Bound the text bytes the plan actually publishes, counting every file it writes.
+
+    Each argument is one published document file. The derived splits republish the *same* rows,
+    so a document that is relevant and retrieved carries its text three times. Measuring only the
+    ``all`` set -- as this did before the splits existed -- under-counts the publication by that
+    duplication factor: the pilot publishes 30.1 MB of text while such a check reports 24.7 MB,
+    and a run where most rows are relevant could exceed the cap threefold and still pass.
+    """
+    total_text_bytes = sum(
+        len(str(row.get("text") or "").encode("utf-8")) for rows in published for row in rows
+    )
     if total_text_bytes > MAX_DOCUMENT_TEXT_BYTES:
         raise PublicationError(
-            f"total published text bytes {total_text_bytes} exceeds cap of "
-            f"{MAX_DOCUMENT_TEXT_BYTES} bytes"
+            f"total published text bytes {total_text_bytes} across {len(published)} published "
+            f"document file(s) exceeds cap of {MAX_DOCUMENT_TEXT_BYTES} bytes"
         )
 
 
@@ -325,12 +381,16 @@ def build_plan(
     """Everything the publication consists of, as bytes, without touching the Hub."""
     _validate_repo(repo)
     _check_no_byte_publication(documents)
-    _check_text_byte_cap(documents)
+    relevant_docs = derive_relevant_rows(documents)
+    retrieved_docs = derive_retrieved_rows(documents)
+    _check_text_byte_cap(documents, relevant_docs, retrieved_docs)
     card = render_card(manifest)
     files = (
         PublishFile(CARD_FILE, card.encode("utf-8")),
         PublishFile(MANIFEST_FILE, canonical_bytes(manifest) + b"\n"),
         PublishFile(DOCUMENTS_FILE, _jsonl(documents)),
+        PublishFile(DOCUMENTS_RELEVANT_FILE, _jsonl(relevant_docs)),
+        PublishFile(DOCUMENTS_RETRIEVED_FILE, _jsonl(retrieved_docs)),
         PublishFile(IMAGES_FILE, _jsonl(images)),
     )
     return PublicationPlan(repo=repo, files=files, manifest=manifest)
@@ -380,9 +440,17 @@ def render_card(manifest: Mapping[str, Any]) -> str:
     return f"""---
 configs:
   - config_name: documents
-    data_files: {DOCUMENTS_FILE}
+    data_files:
+      - split: all
+        path: {DOCUMENTS_FILE}
+      - split: relevant
+        path: {DOCUMENTS_RELEVANT_FILE}
+      - split: retrieved
+        path: {DOCUMENTS_RETRIEVED_FILE}
   - config_name: images
-    data_files: {IMAGES_FILE}
+    data_files:
+      - split: train
+        path: {IMAGES_FILE}
 license: odc-by
 task_categories:
 - text-classification
@@ -426,16 +494,30 @@ limit requires — never the shard, never the corpus.
 | image references | {counts["images"]} |
 | unique images | {counts["unique_images"]} |
 
+## Splits
+
+| config | split | count | description |
+| --- | --- | --- | --- |
+| `documents` | `all` | {counts["documents"]} | all scored documents from source shard |
+| `documents` | `relevant` | {counts["relevant"]} | scored documents judged relevant |
+| `documents` | `retrieved` | {counts["retrieved"]} | documents with retrieved source PDF |
+| `images` | `train` | {counts["images"]} | extracted images ({counts["unique_images"]} unique) |
+
 ## Files
 
 | path | contents |
 | --- | --- |
 | `{MANIFEST_FILE}` | run manifest: source, sampling, counts, policy, digests |
-| `{DOCUMENTS_FILE}` | one row per scored document |
+| `{DOCUMENTS_FILE}` | one row per scored document (split: `all`) |
+| `{DOCUMENTS_RELEVANT_FILE}` | documents judged relevant to agriculture (split: `relevant`) |
+| `{DOCUMENTS_RETRIEVED_FILE}` | documents whose source PDF was retrieved (split: `retrieved`) |
 | `{IMAGES_FILE}` | one row per extracted image |
 
-Digests: documents `{manifest["documents_digest"][:16]}…`, images
-`{manifest["images_digest"][:16]}…`. Both are SHA-256 over the canonical JSON of the rows.
+Digests (SHA-256 over canonical JSON rows):
+- `documents` (`all`): `{manifest["documents_digest"][:16]}…`
+- `documents` (`relevant`): `{manifest["documents_relevant_digest"][:16]}…`
+- `documents` (`retrieved`): `{manifest["documents_retrieved_digest"][:16]}…`
+- `images` (`train`): `{manifest["images_digest"][:16]}…`
 
 ### `{DOCUMENTS_FILE}`
 
