@@ -25,7 +25,7 @@ class Hub(Protocol):
     """The Hub operations a publication needs, and no others."""
 
     def file_digests(self, repo: str) -> dict[str, str]:
-        """Path -> SHA-256 for every file currently in the dataset repository."""
+        """Path -> a content identity: a git blob id, or a SHA-256 for an LFS object."""
         ...
 
     def revision(self, repo: str) -> str:
@@ -52,11 +52,15 @@ class FakeHub:
     fail_with: Exception | None = None
 
     def file_digests(self, repo: str) -> dict[str, str]:
-        from finepdf_to_images.domain.serialization import sha256_hex
+        """Reports git blob ids, which is what the real Hub gives for files this size.
 
+        Returning SHA-256 here -- as an earlier version did -- modelled behaviour the real adapter
+        never exhibits, and made every idempotency and verification test assert a property that
+        could not hold in production.
+        """
         self.calls.append(f"file_digests:{repo}")
         self._maybe_fail()
-        return {path: sha256_hex(data) for path, data in self.files.items()}
+        return {path: PublishFile(path, data).git_blob_sha1 for path, data in self.files.items()}
 
     def revision(self, repo: str) -> str:
         self.calls.append(f"revision:{repo}")
@@ -103,21 +107,23 @@ class HuggingFaceHub:
         return HfApi()
 
     def file_digests(self, repo: str) -> dict[str, str]:
-        """Path -> SHA-256 for the repository's current files.
+        """Path -> a content identity for each file in the repository.
 
-        The Hub records a git blob sha for small files and a real content SHA-256 only for LFS
-        entries, so this asks for the content hashes it does have and simply omits the rest. A file
-        whose digest is unknown is treated as "not matching", which errs toward re-uploading rather
-        than toward silently skipping a changed file.
+        The Hub records a git blob id for an ordinary file and a content SHA-256 only for an LFS
+        object, so this reports whichever it has and the domain matches against both. Reporting
+        only the LFS hashes -- as an earlier version did -- meant none of the four small files this
+        stage publishes could ever match, so verification failed on every successful publication
+        and a re-run was never recognised as a no-op.
+
+        A file with neither identity is omitted, and an omitted file counts as not matching: that
+        errs toward re-uploading rather than toward silently skipping something that changed.
         """
         try:
             entries = self._api().list_repo_tree(repo, repo_type="dataset", recursive=True)
         except Exception as error:
             raise HubError(f"could not read {repo}: {type(error).__name__}: {error}") from error
         return {
-            entry.path: entry.lfs.sha256
-            for entry in entries
-            if getattr(entry, "lfs", None) is not None
+            entry.path: digest for entry in entries if (digest := _identity_of(entry)) is not None
         }
 
     def revision(self, repo: str) -> str:
@@ -146,6 +152,15 @@ class HuggingFaceHub:
                 f"could not publish to {plan.repo}: {type(error).__name__}: {error}"
             ) from error
         return str(getattr(commit, "oid", "") or self.revision(plan.repo))
+
+
+def _identity_of(entry: Any) -> str | None:
+    """An LFS object's content SHA-256, else the git blob id, else nothing."""
+    lfs = getattr(entry, "lfs", None)
+    if lfs is not None and getattr(lfs, "sha256", None):
+        return str(lfs.sha256)
+    blob_id = getattr(entry, "blob_id", None)
+    return str(blob_id) if blob_id else None
 
 
 def digests_of(files: tuple[PublishFile, ...]) -> dict[str, str]:

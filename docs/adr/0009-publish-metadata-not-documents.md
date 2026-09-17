@@ -37,7 +37,11 @@ Decide idempotency by content, and keep every timestamp out of the manifest.
   relevant and 16 retrieved. A dataset that showed only the 16 would misrepresent the pilot.
 - The card cannot drift from the rules, but it is also harder to write prose in: anything
   interesting to say has to be either generated or a literal in one template.
-- No-op detection depends on the Hub exposing content hashes. It does so only for LFS entries, so
-  small files re-upload rather than compare equal — safe, slightly wasteful, and documented.
-- Anyone who later establishes terms for specific documents can add allow-list entries and the same
-  command will publish their bytes. Nothing in this stage needs to change for that.
+- No-op detection depends on the Hub exposing a content identity. It gives a git blob id for an
+  ordinary file and a SHA-256 only for an LFS object, so the comparison accepts either. An earlier
+  version compared SHA-256 alone, which meant nothing ever matched: every successful publication
+  would have reported a verification failure and exited 1, and no re-run would have been a no-op.
+- Byte publication is **not** implemented, and `build_plan` refuses a row cleared for it rather
+  than quietly publishing an index whose card claims otherwise. Adding allow-list entries is
+  therefore a change to this stage, not a configuration change — which is the honest position, and
+  the opposite of what an earlier draft of this ADR said.

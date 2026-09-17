@@ -54,7 +54,8 @@ The policy is consumed by the retrieval stage (every record carries a `decide()`
 the publication stage, whose card is generated from `policy_summary()`. See
 [Publishing](publishing.md).
 
-## TD-005 (historical) — the policy was not wired into a pipeline stage
+<!-- The original entry, kept for the reasoning rather than as an open item. -->
+### Why it was open
 
 **State.** `domain.policy.decide()` is complete and tested, but nothing calls it: there is no
 retrieval or extraction stage yet to produce artifacts for it to judge, and no publication stage to

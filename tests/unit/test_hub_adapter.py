@@ -44,13 +44,16 @@ class Commit:
 class FakeApi:
     """Stands in for ``HfApi``. Records what it was asked to do."""
 
-    entries: list[Entry] = field(default_factory=list)
+    #: Deliberately ``Any``: the real Hub returns different entry types for LFS objects and
+    #: ordinary files, and the adapter reads them duck-typed. Pinning one shape here would test a
+    #: world the adapter never sees.
+    entries: list[Any] = field(default_factory=list)
     sha: str = "deadbeef"
     raises: Exception | None = None
     calls: list[str] = field(default_factory=list)
     committed: list[Any] = field(default_factory=list)
 
-    def list_repo_tree(self, repo: str, **kwargs: Any) -> list[Entry]:
+    def list_repo_tree(self, repo: str, **kwargs: Any) -> list[Any]:
         self.calls.append(f"list:{repo}:{kwargs.get('repo_type')}:{kwargs.get('recursive')}")
         if self.raises:
             raise self.raises
@@ -159,3 +162,49 @@ def test_the_adapter_never_reads_or_passes_a_token() -> None:
     source = inspect.getsource(module)
     for secret in ("token=", "HF_TOKEN", "use_auth_token", "api_key"):
         assert secret not in source, f"{secret} must not appear in the Hub adapter"
+
+
+# --------------------------------------------------------------------------- content identity
+
+
+def test_an_ordinary_file_is_identified_by_its_git_blob_id() -> None:
+    """REGRESSION: only LFS entries were reported, and none of the four published files is LFS.
+
+    Against the real Hub that meant every verification failed and no re-run was ever a no-op.
+    """
+
+    @dataclass
+    class BlobEntry:
+        path: str
+        blob_id: str
+
+    api = FakeApi(entries=[BlobEntry("README.md", "a" * 40)])
+    assert hub(api).file_digests("a/b") == {"README.md": "a" * 40}
+
+
+def test_an_lfs_object_still_reports_its_content_hash() -> None:
+    api = FakeApi(entries=[Entry("big.bin", Lfs("c" * 64))])
+    assert hub(api).file_digests("a/b") == {"big.bin": "c" * 64}
+
+
+def test_an_lfs_hash_is_preferred_over_the_blob_id() -> None:
+    """For an LFS pointer the blob id hashes the pointer file, not the content."""
+
+    @dataclass
+    class BothEntry:
+        path: str
+        blob_id: str
+        lfs: Lfs
+
+    api = FakeApi(entries=[BothEntry("big.bin", "b" * 40, Lfs("c" * 64))])
+    assert hub(api).file_digests("a/b") == {"big.bin": "c" * 64}
+
+
+def test_an_entry_with_neither_identity_is_omitted() -> None:
+    """Omitted counts as not matching, so a publication re-uploads rather than skipping."""
+
+    @dataclass
+    class Bare:
+        path: str
+
+    assert hub(FakeApi(entries=[Bare("x")])).file_digests("a/b") == {}

@@ -22,7 +22,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from finepdf_to_images import __version__
-from finepdf_to_images.adapters.hub import HuggingFaceHub
+from finepdf_to_images.adapters.hub import HubError, HuggingFaceHub
 from finepdf_to_images.adapters.images import PypdfImageExtractor
 from finepdf_to_images.adapters.retrieval import HttpxTransport
 from finepdf_to_images.adapters.source import (
@@ -127,11 +127,19 @@ def _cmd_retrieve(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+#: Blocks a stage manifest must carry for the later stages to use it. Checked on read so a
+#: truncated file names itself rather than surfacing as a KeyError deep in card rendering.
+_REQUIRED_MANIFEST_KEYS: dict[str, tuple[str, ...]] = {"select": ("source", "sampling")}
+
+
 def _stage_manifest(path: pathlib.Path, stage: str) -> Mapping[str, Any]:
     """Read a stage manifest, refusing one from a different stage."""
     manifest = json.loads(read_bytes(path))
     if not isinstance(manifest, dict) or manifest.get("stage") != stage:
         raise ValueError(f"{path} is not a {stage} manifest")
+    for required in _REQUIRED_MANIFEST_KEYS.get(stage, ()):
+        if not isinstance(manifest.get(required), dict):
+            raise ValueError(f"{path} has no usable {required!r} block")
     return manifest
 
 
@@ -394,7 +402,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         # answered by widening the read.
         print(f"{PROG}: {error}", file=sys.stderr)
         raise SystemExit(EXIT_USAGE) from error
-    except (OSError, ValueError) as error:
+    except HubError as error:
+        # A dead network or a wrong repo name is a failure to publish, not a crash.
+        print(f"{PROG}: {error}", file=sys.stderr)
+        raise SystemExit(EXIT_FAILURE) from error
+    except (OSError, ValueError, KeyError) as error:
+        # KeyError covers a truncated stage manifest: the card and the commit message index the
+        # source and sampling blocks directly, and a missing key should say which file is wrong.
         # ValueError covers pyarrow's ArrowInvalid, so a corrupt or truncated shard fails with a
         # diagnostic instead of a traceback. SourceConfigurationError is handled above.
         print(f"{PROG}: {error}", file=sys.stderr)

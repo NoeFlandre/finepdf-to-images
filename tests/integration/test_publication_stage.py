@@ -380,3 +380,64 @@ def test_cli_can_write_the_planned_files_for_review(
     run_cli(["publish", *staged_inputs(tmp_path), "--out", str(out)])
     assert (out / CARD_FILE).is_file()
     assert hub.wrote is False
+
+
+def test_publication_is_verified_and_idempotent_against_a_realistic_hub() -> None:
+    """The end-to-end property the LFS bug broke, against a Hub that reports what the real one does.
+
+    REGRESSION: FakeHub used to return a content SHA-256 for every file -- behaviour the real
+    adapter never exhibits -- so every idempotency and verification test asserted a property that
+    could not hold in production. This exercises the same path through git blob ids.
+    """
+    hub = FakeHub()
+    first = publish(hub, apply=True)
+    assert first.ok, "a successful publication must not report a verification failure"
+    assert first.missing == ()
+
+    second = publish(hub, apply=True)
+    assert second.noop is True
+    assert len(hub.commits) == 1
+
+    assert publish(hub).noop is True, "a later dry run must recognise the published state"
+
+
+def test_a_hub_that_reports_nothing_is_never_a_noop() -> None:
+    """A Hub with no usable identity for a file must re-publish, not silently skip it."""
+
+    class Silent(FakeHub):
+        def file_digests(self, repo: str) -> dict[str, str]:
+            self.calls.append(f"file_digests:{repo}")
+            return {}
+
+    hub = Silent()
+    result = publish(hub, apply=True)
+    assert result.noop is False
+    assert not result.ok, "unverifiable files must be reported, not assumed correct"
+    assert set(result.missing) == {CARD_FILE, MANIFEST_FILE, DOCUMENTS_FILE, IMAGES_FILE}
+
+
+def test_cli_reports_a_hub_failure_as_a_diagnostic_not_a_traceback(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A dead network or a wrong repo name is a failure to publish, not a crash."""
+    from finepdf_to_images import cli
+
+    monkeypatch.setattr(cli, "HUB_FACTORY", lambda: FakeHub(fail_with=HubError("network is down")))
+    assert run_cli(["publish", *staged_inputs(tmp_path)]) == 1
+    assert "network is down" in capsys.readouterr().err
+
+
+def test_cli_reports_a_truncated_select_manifest_by_name(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The card and commit message index the source and sampling blocks directly; a missing one
+    should name the file rather than surface as a KeyError from card rendering."""
+    from finepdf_to_images import cli
+
+    monkeypatch.setattr(cli, "HUB_FACTORY", FakeHub)
+    args = staged_inputs(tmp_path)
+    truncated = tmp_path / "truncated.json"
+    truncated.write_text(json.dumps({"stage": "select", "source": SOURCE}), encoding="utf-8")
+    args[args.index("--select-manifest") + 1] = str(truncated)
+    assert run_cli(["publish", *args]) == 1
+    assert "no usable 'sampling' block" in capsys.readouterr().err

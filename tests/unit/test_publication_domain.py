@@ -375,3 +375,63 @@ def test_a_plan_never_contains_source_bytes(count: int) -> None:
         IMAGES_FILE,
     }
     assert not manifest["publishes_source_bytes"]
+
+
+# --------------------------------------------------------------------------- content identity
+
+
+def test_a_file_matches_either_identity_the_hub_may_report() -> None:
+    """REGRESSION: matching on SHA-256 alone meant nothing this stage publishes ever matched.
+
+    The Hub reports a git blob id for an ordinary file and a content SHA-256 only for an LFS
+    object. All four published files are small, so on the real Hub every verification would have
+    failed and every re-run would have created another commit.
+    """
+    from finepdf_to_images.domain.publication import PublishFile
+
+    file = PublishFile("README.md", b"# card")
+    assert file.matches(file.sha256)
+    assert file.matches(file.git_blob_sha1)
+    assert file.sha256 != file.git_blob_sha1
+    assert not file.matches("0" * 40)
+    assert not file.matches(None)
+
+
+def test_the_git_blob_id_is_the_one_git_itself_would_compute() -> None:
+    """Checked against git's documented object format rather than against our own function."""
+    import hashlib
+    import subprocess
+
+    from finepdf_to_images.domain.publication import PublishFile
+
+    data = b"some published bytes\n"
+    expected = hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
+    assert PublishFile("x", data).git_blob_sha1 == expected
+
+    real = subprocess.run(
+        ["git", "hash-object", "--stdin"], input=data, capture_output=True, check=True
+    )
+    assert real.stdout.decode().strip() == expected
+
+
+def test_a_noop_is_recognised_from_git_blob_ids() -> None:
+    documents, images, manifest = assembled()
+    plan = build_plan(repo="a/b", manifest=manifest, documents=documents, images=images)
+    assert is_noop(plan, {file.path: file.git_blob_sha1 for file in plan.files})
+
+
+def test_a_cleared_row_is_refused_until_byte_publication_exists() -> None:
+    """REGRESSION: the card's "some source bytes are republished" sentence could fire while the
+    plan still contained only the index -- a published falsehood."""
+    documents, images, manifest = assembled()
+    documents[0]["disposition"] = "publish-artifact"
+    manifest = build_manifest(
+        source=SOURCE,
+        sampling=SAMPLING,
+        documents=documents,
+        images=images,
+        vocabulary_version=3,
+    )
+    assert manifest["publishes_source_bytes"] is True
+    with pytest.raises(PublicationError, match="does not implement"):
+        build_plan(repo="a/b", manifest=manifest, documents=documents, images=images)

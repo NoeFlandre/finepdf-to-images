@@ -11,7 +11,8 @@ uv run finepdf-to-images publish \
   --out out/publish            # writes the planned files locally for review
 ```
 
-Nothing above touches the Hub. Add `--apply` to publish.
+Nothing above *changes* the Hub — it is read, to work out whether the result is already there —
+and `--apply` is what publishes.
 
 ## Dry run by default
 
@@ -62,9 +63,13 @@ what you produced.
 After an upload the Hub is read back and each file's digest compared against what was sent. A
 mismatch is reported and the command exits non-zero rather than claiming success.
 
-The Hub records a content SHA-256 only for LFS entries; a file whose digest is unknown is treated
-as *not matching*, so a publication re-uploads rather than silently skipping something that may
-have changed. Erring toward re-uploading is the safe direction here.
+The Hub reports a **git blob id** for an ordinary file and a content SHA-256 only for an LFS
+object, so the comparison accepts either identity. This matters more than it sounds: none of the
+four files published here is large enough to be an LFS object, so matching on SHA-256 alone meant
+nothing ever matched — every successful publication would have reported "verification FAILED" and
+exited 1, and a re-run would never have been recognised as a no-op. A file with neither identity is
+still treated as *not matching*, so a publication re-uploads rather than silently skipping
+something that may have changed.
 
 ## Credentials
 

@@ -669,7 +669,7 @@ def _upload_and_verify(
     """Publish, then read the Hub back and check it holds exactly what we sent."""
     revision = hub.upload(plan, _commit_message(manifest))
     published = hub.file_digests(repo)
-    missing = tuple(file.path for file in plan.files if published.get(file.path) != file.sha256)
+    missing = tuple(file.path for file in plan.files if not file.matches(published.get(file.path)))
     return PublicationResult(
         plan=plan,
         applied=True,

@@ -13,6 +13,7 @@ cannot drift from the code that enforces them.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -87,8 +88,25 @@ class PublishFile:
         return sha256_hex(self.data)
 
     @property
+    def git_blob_sha1(self) -> str:
+        """The git object id this content would have.
+
+        The Hub exposes a content SHA-256 only for LFS objects. Every file this stage publishes is
+        small enough to be an ordinary git blob, so the SHA-256 alone could never match anything
+        the Hub reports -- verification would fail on every successful publication and a re-run
+        would never be recognised as a no-op. Git's own object id is the identity that *is*
+        available, and it is just as much a content hash.
+        """
+        header = f"blob {len(self.data)}\0".encode()
+        return hashlib.sha1(header + self.data, usedforsecurity=False).hexdigest()
+
+    @property
     def size(self) -> int:
         return len(self.data)
+
+    def matches(self, remote_digest: str | None) -> bool:
+        """Whether a digest the Hub reported is this content, by either identity it may use."""
+        return remote_digest is not None and remote_digest in {self.sha256, self.git_blob_sha1}
 
     def as_dict(self) -> dict[str, Any]:
         return {"path": self.path, "sha256": self.sha256, "size": self.size}
@@ -263,6 +281,16 @@ def build_plan(
     if not isinstance(repo, str) or not _REPO_RE.fullmatch(repo):
         raise PublicationError(f"invalid destination repo {repo!r}: expected namespace/name")
 
+    # Byte publication is not implemented. If the policy ever clears a document, that is a change
+    # to this stage, not a silent no-op -- and the card must not claim bytes were published when
+    # the plan contains only the index.
+    cleared = [row["row_id"] for row in documents if row.get("disposition") == "publish-artifact"]
+    if cleared:
+        raise PublicationError(
+            f"{len(cleared)} row(s) are cleared for byte publication, which this stage does not "
+            f"implement yet (first: {cleared[0]!r}). Implement artifact upload before allowing it."
+        )
+
     card = render_card(manifest)
     files = (
         PublishFile(CARD_FILE, card.encode("utf-8")),
@@ -280,10 +308,11 @@ def _jsonl(rows: Sequence[Mapping[str, Any]]) -> bytes:
 def is_noop(plan: PublicationPlan, remote: Mapping[str, str]) -> bool:
     """Whether every planned file is already on the Hub with exactly these bytes.
 
-    ``remote`` maps path to SHA-256. Idempotency is decided by content, so re-running the same
-    pilot is a no-op no matter how many times it happens.
+    ``remote`` maps path to whichever content identity the Hub reported -- a git blob id for an
+    ordinary file, a SHA-256 for an LFS object. Idempotency is decided by content either way, so
+    re-running the same pilot is a no-op no matter how many times it happens.
     """
-    return all(remote.get(file.path) == file.sha256 for file in plan.files)
+    return all(file.matches(remote.get(file.path)) for file in plan.files)
 
 
 def _table(fields: Sequence[tuple[str, str]]) -> str:
