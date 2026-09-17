@@ -52,6 +52,17 @@ uv run finepdf-to-images extract \
   --pdf-root out/retrieve --out out/extract
 ```
 
+Publish the result (see [Publishing](publishing.md)). This is a **dry run**; add `--apply` to
+upload:
+
+```bash
+uv run finepdf-to-images publish \
+  --select-manifest out/select/manifest.json --scored out/score/scored.jsonl \
+  --retrieved out/retrieve/retrieved.jsonl --documents out/extract/documents.jsonl \
+  --images out/extract/images.jsonl --extract-manifest out/extract/manifest.json \
+  --out out/publish
+```
+
 Exit codes are a stable contract:
 
 | Code | Meaning |

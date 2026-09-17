@@ -48,7 +48,14 @@ entries is the honest state, not a misconfiguration.
 is a concrete set of documents whose terms have actually been established. Until then the dataset
 card must say plainly that no source bytes are republished.
 
-## TD-005 — the policy is not wired into a pipeline stage yet
+## ~~TD-005~~ — retired
+
+The policy is consumed by the retrieval stage (every record carries a `decide()` verdict) and by
+the publication stage, whose card is generated from `policy_summary()`. See
+[Publishing](publishing.md).
+
+<!-- The original entry, kept for the reasoning rather than as an open item. -->
+### Why it was open
 
 **State.** `domain.policy.decide()` is complete and tested, but nothing calls it: there is no
 retrieval or extraction stage yet to produce artifacts for it to judge, and no publication stage to

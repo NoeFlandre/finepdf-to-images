@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from finepdf_to_images.adapters.hub import Hub
 from finepdf_to_images.adapters.images import ImageExtractor, encoder_versions
 from finepdf_to_images.adapters.retrieval import Transport, TransportError
 from finepdf_to_images.adapters.source import ShardReader
@@ -22,6 +23,14 @@ from finepdf_to_images.domain.images import (
     build_image_record,
     sort_key,
 )
+from finepdf_to_images.domain.publication import (
+    PublicationPlan,
+    build_document_rows,
+    build_image_rows,
+    build_plan,
+    is_noop,
+)
+from finepdf_to_images.domain.publication import build_manifest as build_publication_manifest
 from finepdf_to_images.domain.retrieval import (
     FailureReason,
     RetrievalLimits,
@@ -581,4 +590,128 @@ def run_extract(
         images=len(image_rows),
         unique_images=len(seen),
         failed=failed,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationResult:
+    plan: PublicationPlan
+    applied: bool
+    noop: bool
+    revision: str
+    verified: tuple[str, ...]
+    missing: tuple[str, ...]
+
+    @property
+    def ok(self) -> bool:
+        return not self.missing
+
+
+def run_publish(
+    *,
+    hub: Hub,
+    repo: str,
+    select_manifest: Mapping[str, Any],
+    scored: Sequence[Mapping[str, Any]],
+    retrieved: Sequence[Mapping[str, Any]],
+    documents: Sequence[Mapping[str, Any]],
+    images: Sequence[Mapping[str, Any]],
+    extract_manifest: Mapping[str, Any] | None = None,
+    apply: bool = False,
+    out_dir: pathlib.Path | None = None,
+) -> PublicationResult:
+    """Plan a publication, and carry it out only when ``apply`` is true.
+
+    The dry run never reaches the adapter's write path. That is the structural reason "dry-run does
+    not mutate the Hub" holds: it is not a flag consulted inside an upload, it is an upload that is
+    never called.
+    """
+    plan, manifest = _plan_publication(
+        repo=repo,
+        select_manifest=select_manifest,
+        scored=scored,
+        retrieved=retrieved,
+        documents=documents,
+        images=images,
+        extract_manifest=extract_manifest,
+    )
+    if out_dir is not None:
+        # A local copy of exactly what would be uploaded, so a reviewer can read the card and the
+        # rows before anything reaches the Hub.
+        for file in plan.files:
+            write_bytes(out_dir / file.path, file.data)
+
+    noop = is_noop(plan, hub.file_digests(repo))
+    if not apply:
+        return PublicationResult(
+            plan=plan, applied=False, noop=noop, revision="", verified=(), missing=()
+        )
+    if noop:
+        return _already_published(hub, plan, repo)
+    return _upload_and_verify(hub, plan, repo, manifest)
+
+
+def _already_published(hub: Hub, plan: PublicationPlan, repo: str) -> PublicationResult:
+    """Nothing to do: every file is on the Hub with exactly these bytes."""
+    return PublicationResult(
+        plan=plan,
+        applied=False,
+        noop=True,
+        revision=hub.revision(repo),
+        verified=tuple(file.path for file in plan.files),
+        missing=(),
+    )
+
+
+def _upload_and_verify(
+    hub: Hub, plan: PublicationPlan, repo: str, manifest: Mapping[str, Any]
+) -> PublicationResult:
+    """Publish, then read the Hub back and check it holds exactly what we sent."""
+    revision = hub.upload(plan, _commit_message(manifest))
+    published = hub.file_digests(repo)
+    missing = tuple(file.path for file in plan.files if not file.matches(published.get(file.path)))
+    return PublicationResult(
+        plan=plan,
+        applied=True,
+        noop=False,
+        revision=revision,
+        verified=tuple(file.path for file in plan.files if file.path not in missing),
+        missing=missing,
+    )
+
+
+def _plan_publication(
+    *,
+    repo: str,
+    select_manifest: Mapping[str, Any],
+    scored: Sequence[Mapping[str, Any]],
+    retrieved: Sequence[Mapping[str, Any]],
+    documents: Sequence[Mapping[str, Any]],
+    images: Sequence[Mapping[str, Any]],
+    extract_manifest: Mapping[str, Any] | None,
+) -> tuple[PublicationPlan, dict[str, Any]]:
+    """Assemble everything a publication would write, without touching the Hub."""
+    document_rows = build_document_rows(scored=scored, retrieved=retrieved, extracted=documents)
+    image_rows = build_image_rows(images)
+    manifest = build_publication_manifest(
+        source=select_manifest["source"],
+        sampling=select_manifest["sampling"],
+        documents=document_rows,
+        images=image_rows,
+        vocabulary_version=vocabulary_summary()["version"],
+        encoder=(extract_manifest or {}).get("encoder"),
+    )
+    plan = build_plan(repo=repo, manifest=manifest, documents=document_rows, images=image_rows)
+    return plan, manifest
+
+
+def _commit_message(manifest: Mapping[str, Any]) -> str:
+    """A commit message derived from the run, so two runs of the same pilot commit identically."""
+    counts = manifest["counts"]
+    source = manifest["source"]
+    return (
+        f"Publish bounded FinePDFs agriculture pilot: {counts['documents']} documents, "
+        f"{counts['relevant']} relevant, {counts['retrieved']} retrieved, "
+        f"{counts['images']} images\n\n"
+        f"Source: {source['dataset']}@{source['revision']} {source['path']}"
     )

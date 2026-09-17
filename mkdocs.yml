@@ -11,6 +11,7 @@ nav:
   - Retrieving PDFs: retrieval.md
   - Extracting images: images.md
   - Publication policy: policy.md
+  - Publishing: publishing.md
   - Architecture: architecture.md
   - Quality gates: quality.md
   - Decisions:
@@ -23,4 +24,5 @@ nav:
       - ADR-0006 Decide in the domain, fetch in the adapter: adr/0006-refuse-then-fetch.md
       - ADR-0007 Extract embedded images, and nothing else: adr/0007-embedded-images-only.md
       - ADR-0008 What blocks a merge, and what does not: adr/0008-quality-gauntlet.md
+      - ADR-0009 Publish an index, not a document dump: adr/0009-publish-metadata-not-documents.md
   - Technical debt: technical-debt.md
