@@ -67,6 +67,9 @@ ban-relative-imports = "parents"
 
 [tool.ty.environment]
 root = ["./src", "."]
+# Agent worktrees are checkouts of this repository placed inside it; type-checking them means
+# type-checking another branch. Ruff excludes them for the same reason.
+exclude = [".claude"]
 
 [tool.coverage.run]
 branch = true

@@ -35,7 +35,8 @@ identical" and removed nothing.
 
 ## Consequences
 
-- The published tree can shrink, which is what makes the minimal layout of ADR-0015 possible.
+- The published tree can shrink, which is what makes a minimal republished layout possible at
+  all: without deletion, a cleaner dataset could only be added alongside the mess it replaces.
 - **Forgetting a CLI flag became destructive, and had to be closed.** `--pdf-root` and
   `--image-root` were optional: omitting one silently dropped those artifacts from the plan. That
   was survivable while publication could only add files — the bytes simply were not uploaded that
