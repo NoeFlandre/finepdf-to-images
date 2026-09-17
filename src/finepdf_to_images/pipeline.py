@@ -23,6 +23,7 @@ from finepdf_to_images.domain.images import (
     ImageRecord,
     build_image_record,
     image_path,
+    is_publishable_size,
     sort_key,
 )
 from finepdf_to_images.domain.publication import (
@@ -469,6 +470,11 @@ def _pdf_bytes_for(record: Mapping[str, Any], pdf_root: pathlib.Path) -> bytes:
     return data
 
 
+def _publishable(extracted: Sequence[Any]) -> list[Any]:
+    """Drop the page rules a PDF embeds as images. See ADR-0017."""
+    return [image for image in extracted if is_publishable_size(image.width, image.height)]
+
+
 def _image_record(image: Any, row_id: str, row_index: int, pdf_sha256: str) -> ImageRecord:
     return build_image_record(
         document_row_id=row_id,
@@ -516,7 +522,7 @@ def _extract_one(
         # claimed otherwise since before it was true.
         row_index, row_id, _url = _identity_of(record)
         pdf_bytes = _pdf_bytes_for(record, pdf_root)
-        extracted = extractor.extract(pdf_bytes)
+        extracted = _publishable(extractor.extract(pdf_bytes))
         records = [_image_record(i, row_id, row_index, pdf_sha256) for i in extracted]
     except Exception as error:
         # Deliberately one handler. A malformed document, a missing file, a non-string path, a

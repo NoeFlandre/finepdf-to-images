@@ -20,8 +20,9 @@ from typing import Any
 
 from finepdf_to_images.domain import policy
 from finepdf_to_images.domain.allowlist import allowlist_summary
-from finepdf_to_images.domain.images import image_path
+from finepdf_to_images.domain.images import MIN_IMAGE_SIDE, image_path
 from finepdf_to_images.domain.retrieval import artifact_path
+from finepdf_to_images.domain.scoring import vocabulary_summary
 from finepdf_to_images.domain.serialization import content_digest, sha256_hex
 
 #: Bumped when the published row shape changes. Consumers index on these names.
@@ -660,6 +661,9 @@ def render_dataset_card(manifest: Mapping[str, Any], repo: str, published_rows: 
     """
     source = manifest["source"]
     sampling = manifest["sampling"]
+    vocabulary = vocabulary_summary()
+    thresholds = vocabulary["thresholds"]
+    groups = len(vocabulary["groups"])
     counts = manifest["counts"]
     seed = sampling["seed"]
     return f"""---
@@ -706,6 +710,32 @@ repeat across its images, so every row stands alone.
 
 `matched_terms` is why the row is here. It lets you argue with the selection rather than take it
 on faith.
+
+## How a row got here
+
+**Selection is a keyword filter over English text — not a model.** It is deliberately
+unclever, so you can read the rule, disagree with it, and see exactly which words produced
+each row in `matched_terms`.
+
+The text is Unicode-normalised and casefolded, then matched against
+**{vocabulary["surface_form_count"]} phrases** grouped into
+**{vocabulary["concept_count"]} concepts** across {groups} groups
+(crops, soil, irrigation, livestock, fisheries, forestry, farm management).
+Spellings of one idea — `fertilizer`/`fertiliser`, `farm`/`farmer`/`farming` — count as **one**
+concept, not several, so repetition cannot manufacture evidence.
+
+A document is **relevant** when it matches at least {thresholds["min_groups"]} different groups,
+or at least {thresholds["min_concepts_in_one_group"]} distinct concepts inside one. A single
+passing mention is not enough. Ambiguous words are excluded outright — `corn`, `crop`, `field`,
+`plant`, `yield` and `harvest` mean other things in most documents.
+
+**What this misses:** it only covers English, so an agricultural document in another language is
+a miss rather than a negative, and a relevant document that never uses the vocabulary is invisible
+to it.
+
+Everything after selection is mechanical: only relevant documents are fetched, only real PDFs are
+kept, and images under **{MIN_IMAGE_SIDE}px on either side** are dropped — PDFs embed their table
+rules as images and those are not pictures. A document left with no image publishes no rows.
 
 ## Source
 

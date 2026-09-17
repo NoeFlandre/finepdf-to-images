@@ -82,6 +82,28 @@ class ImageRecord:
         return dataclasses.asdict(self)
 
 
+#: Smallest side, in pixels, an extracted image must have to be worth publishing.
+#:
+#: PDFs embed their table borders and underlines as real images, and the extractor cannot tell
+#: them from photographs. On the 5000-row pilot **216 of 493 published rows (44%) had a side under
+#: 32px**, 178 of them a side of 1-3px -- a `282x1` table rule is an image in the technical sense
+#: and worthless in every other.
+#:
+#: 32 is chosen on the measured distribution rather than taste. It removes the whole artifact mass
+#: (every image with a side under 32px) while sitting in a flat region: raising it to 48 changes
+#: the result by 7 rows out of 493. 64 would drop a further 60 images that are genuine small
+#: pictures -- icons, logos, seals -- so the cut goes where the artifacts end, not deeper.
+MIN_IMAGE_SIDE = 32
+
+
+def is_publishable_size(width: int, height: int, min_side: int = MIN_IMAGE_SIDE) -> bool:
+    """Whether an image is large enough to be worth a row.
+
+    Both sides, not area: a `600x2` rule has a respectable area and is still a line.
+    """
+    return min(width, height) >= min_side
+
+
 def build_image_record(
     *,
     document_row_id: str,

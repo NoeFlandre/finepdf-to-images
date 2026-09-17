@@ -1134,3 +1134,37 @@ def test_an_invalid_destination_is_refused(repo: str) -> None:
             extract_manifest=EXTRACT_MANIFEST,
             image_root=_fixture_image_root(),
         )
+
+
+def test_the_card_explains_the_relevance_rule_and_the_filters() -> None:
+    """A reader should be able to tell why a document is here without reading the code.
+
+    Generated from vocabulary_summary() and MIN_IMAGE_SIDE rather than written, so the described
+    rule cannot drift from the one that selected the rows -- the same reason the rest of the card
+    is generated.
+    """
+    from finepdf_to_images.domain.images import MIN_IMAGE_SIDE
+    from finepdf_to_images.domain.scoring import vocabulary_summary
+
+    hub = FakeHub()
+    publish(hub, apply=True)
+    card = _card(hub)
+    vocabulary = vocabulary_summary()
+
+    assert "## How a row got here" in card
+    assert f"**{vocabulary['surface_form_count']} phrases**" in card
+    assert f"**{vocabulary['concept_count']} concepts**" in card
+    assert f"at least {vocabulary['thresholds']['min_groups']} different groups" in card
+    assert "keyword filter over English text" in card
+    assert "only covers English" in card
+    assert f"**{MIN_IMAGE_SIDE}px on either side**" in card
+
+
+def test_the_card_section_tracks_the_scorer_rather_than_repeating_it() -> None:
+    """If the vocabulary grows, the card says so without anyone editing it."""
+    from finepdf_to_images.domain.scoring import vocabulary_summary
+
+    hub = FakeHub()
+    publish(hub, apply=True)
+    stated = int(_card(hub).split(" phrases**")[0].rsplit("**", 1)[1])
+    assert stated == vocabulary_summary()["surface_form_count"]

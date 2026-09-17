@@ -107,18 +107,20 @@ def build_pdf(
     return _assemble(objects)
 
 
-#: name -> bytes. Each is a deliberate case; see the docstring of the test that consumes it.
+#: Fixture images are at least MIN_IMAGE_SIDE on both sides. They used to be 2x2, which the
+#: extractor now discards as a page rule -- and a fixture the pipeline throws away tests nothing.
+#: See ADR-0017.
 FIXTURES: dict[str, bytes] = {
     # Two visually distinct images on one page: the headline case from issue #4.
-    "two-images.pdf": build_pdf([(2, 2, (255, 0, 0)), (3, 2, (0, 0, 255))]),
+    "two-images.pdf": build_pdf([(32, 32, (255, 0, 0)), (48, 32, (0, 0, 255))]),
     # The same image bytes twice, so deduplication has something to deduplicate.
-    "duplicate-images.pdf": build_pdf([(2, 2, (0, 255, 0)), (2, 2, (0, 255, 0))]),
+    "duplicate-images.pdf": build_pdf([(32, 32, (0, 255, 0)), (32, 32, (0, 255, 0))]),
     # A valid PDF with nothing to extract. Must be a zero-image success, not a failure.
     "no-images.pdf": build_pdf([]),
     # Page rotation must not change the extracted bytes or their order.
-    "rotated-page.pdf": build_pdf([(2, 2, (255, 0, 0)), (3, 2, (0, 0, 255))], rotate=90),
+    "rotated-page.pdf": build_pdf([(32, 32, (255, 0, 0)), (48, 32, (0, 0, 255))], rotate=90),
     # The same two images on two pages, so page ordering and indices are observable.
-    "two-pages.pdf": build_pdf([(2, 2, (255, 0, 0)), (3, 2, (0, 0, 255))], pages=2),
+    "two-pages.pdf": build_pdf([(32, 32, (255, 0, 0)), (48, 32, (0, 0, 255))], pages=2),
     # Not a PDF at all beyond its header: extraction must fail with a bounded diagnostic.
     "malformed.pdf": b"%PDF-1.7\nthis is not a pdf body at all\n%%EOF\n",
     # A header and nothing else.

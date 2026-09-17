@@ -131,3 +131,13 @@ version, Pillow's zlib build — so a published run says what produced it.
 
 **The consequence to be aware of:** every other stage in this pipeline is byte-identical across
 machines. This one is not.
+
+## Images below 32px are discarded
+
+PDFs embed table borders and underlines as real images. On the pilot, 44% of published rows were
+images with a side under 32px, 178 of them 1-3px tall — page rules, not pictures.
+
+An extracted image is kept only when **both** sides are at least 32px, applied at extraction so the
+index and its counts describe real images. See
+[ADR-0017](adr/0017-discard-images-below-32px.md) for the measured distribution behind the number.
+
