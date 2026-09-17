@@ -480,6 +480,34 @@ def _check_one_artifact(artifact: PublishFile, expected: Mapping[str, str]) -> N
         )
 
 
+def _check_payload_as_a_whole(
+    artifacts: Sequence[PublishFile], expected: Mapping[str, str]
+) -> None:
+    """The properties of the payload taken together, once each artifact is individually sound."""
+    paths = [artifact.path for artifact in artifacts]
+    if len(set(paths)) != len(paths):
+        raise PublicationError(
+            f"{len(paths) - len(set(paths))} artifact(s) are repeated. The same file twice would "
+            "count twice against the cap and be uploaded twice."
+        )
+
+    total = sum(len(artifact.data) for artifact in artifacts)
+    if total > MAX_ARTIFACT_BYTES:
+        raise PublicationError(
+            f"total published artifact bytes {total} exceeds cap of {MAX_ARTIFACT_BYTES} bytes"
+        )
+
+    # Last, because a specific complaint about a bad artifact is more useful than a general one
+    # about a missing file, and a bad artifact usually explains the missing one.
+    missing = sorted(set(expected.values()) - set(paths))
+    if missing:
+        raise PublicationError(
+            f"{len(missing)} published row(s) point at artifact bytes that the plan does not "
+            f"carry (first: {missing[0]!r}). A row pointing at a file nobody uploaded is a "
+            "broken reference in the published dataset."
+        )
+
+
 def _check_artifacts(
     artifacts: Sequence[PublishFile],
     documents: Sequence[Mapping[str, Any]],
@@ -495,28 +523,7 @@ def _check_artifacts(
     for artifact in artifacts:
         _check_one_artifact(artifact, expected)
 
-    by_path = {artifact.path: artifact for artifact in artifacts}
-    if len(by_path) != len(artifacts):
-        raise PublicationError(
-            f"{len(artifacts) - len(by_path)} artifact(s) are repeated. The same file twice would "
-            "count twice against the cap and be uploaded twice."
-        )
-
-    total = sum(len(artifact.data) for artifact in artifacts)
-    if total > MAX_ARTIFACT_BYTES:
-        raise PublicationError(
-            f"total published artifact bytes {total} exceeds cap of {MAX_ARTIFACT_BYTES} bytes"
-        )
-
-    # Last, because a specific complaint about a bad artifact is more useful than a general one
-    # about a missing file, and a bad artifact usually explains the missing one.
-    missing = sorted(set(expected.values()) - {artifact.path for artifact in artifacts})
-    if missing:
-        raise PublicationError(
-            f"{len(missing)} published row(s) point at artifact bytes that the plan does not "
-            f"carry (first: {missing[0]!r}). A row pointing at a file nobody uploaded is a "
-            "broken reference in the published dataset."
-        )
+    _check_payload_as_a_whole(artifacts, expected)
 
 
 def _check_text_byte_cap(*published: Sequence[Mapping[str, Any]]) -> None:
