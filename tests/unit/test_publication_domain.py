@@ -1062,3 +1062,16 @@ def test_the_same_artifact_twice_is_refused() -> None:
                 PublishFile(artifact_path(PDF_SHA), PDF),
             ],
         )
+
+
+def test_the_card_does_not_overstate_what_the_allow_list_checks() -> None:
+    """REGRESSION: the card claimed every host in the redirect chain is allow-list checked.
+
+    Only the requested and final URLs are; intermediate hops are validated for SSRF safety but
+    never recorded, so they cannot be. The module docstring and ADR were corrected while this
+    copy -- the one that ships to the Hub and is read by outsiders -- kept the stronger claim.
+    """
+    _, _, manifest = assembled()
+    card = render_card(manifest)
+    assert "Every host in a retrieval" not in card
+    assert "requested URL and the final URL after redirects" in card

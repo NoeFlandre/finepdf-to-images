@@ -811,8 +811,11 @@ recorded in the source repository.
 
 None of these documents states a licence in its own text. The sources below are open by **statute**
 rather than by declaration, which is why each entry cites the instrument it rests on rather than a
-licence file. Every host in a retrieval's redirect chain must match one of these exactly; a chain
-that leaves the host does not keep its permission.
+licence file. Both ends of a retrieval -- the requested URL and the final URL after
+redirects -- must match one of these exactly; a request that leaves the host does not keep
+its permission.
+Intermediate hops are validated for safety but are not recorded, so they are not checked
+against this list.
 
 {_allowlist_table(manifest)}
 
