@@ -34,6 +34,7 @@ from finepdf_to_images.domain.publication import (
     build_dataset_rows,
     build_document_rows,
     build_image_rows,
+    check_inputs_match_extraction,
     cleared_pdf_digests,
     is_noop,
     stale_paths,
@@ -752,6 +753,11 @@ def _plan_publication(
     image_root: pathlib.Path | None = None,
 ) -> tuple[PublicationPlan, dict[str, Any]]:
     """Assemble everything a publication would write, without touching the Hub."""
+    # Before anything is planned: a stale or truncated stage file would shrink the plan, and a
+    # publication deletes what it does not contain.
+    check_inputs_match_extraction(
+        documents=documents, images=images, extract_manifest=extract_manifest
+    )
     document_rows = build_document_rows(scored=scored, retrieved=retrieved, extracted=documents)
     # Every extracted image is published, not only the policy-cleared ones: the dataset owner
     # decided this pilot ships what it extracts, and the card carries the takedown route in place
