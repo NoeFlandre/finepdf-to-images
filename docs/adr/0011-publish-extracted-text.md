@@ -34,5 +34,8 @@ Redistributing this text is legally defensible provided that the ODC-BY attribut
 ## Consequences
 
 - The scorer's decisions and `matched_terms` are auditable directly from the published dataset.
-- The document table payload size increases (~24 MB for the 1000-row pilot), remaining within the 50 MB cap.
+- The document table payload size increases. The 1000-row pilot publishes ~30 MB of text across
+  the three document files of ADR-0012, remaining within the 50 MB cap. The ~24 MB figure this
+  line carried before counted the `all` file alone, which is the under-count that let the cap
+  be exceeded; see ADR-0012.
 - Schema version 2 distinguishes datasets carrying extracted text from legacy schema version 1.

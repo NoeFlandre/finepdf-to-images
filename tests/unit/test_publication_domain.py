@@ -670,7 +670,10 @@ def test_the_card_states_odc_by_attribution_obligation_for_text() -> None:
     )
 )
 def test_derived_splits_are_subsets_and_match_predicates(rows: list[dict[str, Any]]) -> None:
-    docs = sorted(rows, key=lambda r: (r["row_index"] is None, r["row_index"]))
+    # No sort: the derived splits must preserve whatever order they are given, and asserting
+    # that against the generated order is the point. The sort this line used to perform keyed on
+    # `row_index is None`, which the strategy never generates -- a branch that could not run.
+    docs = rows
     relevant = derive_relevant_rows(docs)
     retrieved = derive_retrieved_rows(docs)
 
