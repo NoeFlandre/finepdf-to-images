@@ -53,7 +53,7 @@ def test_a_pdf_with_two_images_yields_two_deterministic_artifacts(
     images = extractor.extract(pdf("two-images.pdf"))
     assert len(images) == 2
     assert [(i.page_index, i.image_index) for i in images] == [(0, 0), (0, 1)]
-    assert [(i.width, i.height) for i in images] == [(2, 2), (3, 2)]
+    assert [(i.width, i.height) for i in images] == [(32, 32), (48, 32)]
     assert all(i.mime == "image/png" for i in images)
     assert images[0].data != images[1].data
 
@@ -71,12 +71,12 @@ def pixel_digest(data: bytes) -> str:
 @pytest.mark.parametrize(
     ("name", "expected"),
     [
-        ("two-images.pdf", [(2, 2, (255, 0, 0)), (3, 2, (0, 0, 255))]),
-        ("duplicate-images.pdf", [(2, 2, (0, 255, 0)), (2, 2, (0, 255, 0))]),
-        ("rotated-page.pdf", [(2, 2, (255, 0, 0)), (3, 2, (0, 0, 255))]),
+        ("two-images.pdf", [(32, 32, (255, 0, 0)), (48, 32, (0, 0, 255))]),
+        ("duplicate-images.pdf", [(32, 32, (0, 255, 0)), (32, 32, (0, 255, 0))]),
+        ("rotated-page.pdf", [(32, 32, (255, 0, 0)), (48, 32, (0, 0, 255))]),
         (
             "two-pages.pdf",
-            [(2, 2, (255, 0, 0)), (3, 2, (0, 0, 255))] * 2,
+            [(32, 32, (255, 0, 0)), (48, 32, (0, 0, 255))] * 2,
         ),
     ],
 )
@@ -454,7 +454,51 @@ def test_the_extractor_is_injectable(tmp_path: pathlib.Path) -> None:
     """The stage runs without pypdf at all, which is what makes the acceptance tests cheap."""
     data = pdf("no-images.pdf")
     png = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00" * 20
-    fixture = FixtureImageExtractor(images={data: [ExtractedImage(0, 0, png, "image/png", 4, 4)]})
+    fixture = FixtureImageExtractor(images={data: [ExtractedImage(0, 0, png, "image/png", 32, 32)]})
     result, _ = staged(["no-images.pdf"], tmp_path, extractor=fixture)
     assert result.images == 1
-    assert read_jsonl(result.images_path)[0]["width"] == 4
+    assert read_jsonl(result.images_path)[0]["width"] == 32
+
+
+# --------------------------------------------------------------------------- tiny-image filter
+
+
+def test_a_page_rule_is_not_extracted_as_an_image() -> None:
+    """REGRESSION: 216 of 493 published rows were images with a side under 32px.
+
+    PDFs embed table borders and underlines as real images, and 178 of those rows had a side of
+    1-3px. A `282x1` table rule is an image in the technical sense and nothing to look at.
+    """
+    from finepdf_to_images.domain.images import is_publishable_size
+
+    assert not is_publishable_size(282, 1), "a table rule"
+    assert not is_publishable_size(20, 1)
+    assert not is_publishable_size(600, 2), "wide enough by area, still a line"
+    assert not is_publishable_size(31, 31), "just under on both sides"
+
+
+def test_a_real_picture_survives_the_filter() -> None:
+    from finepdf_to_images.domain.images import is_publishable_size
+
+    assert is_publishable_size(32, 32), "exactly at the threshold"
+    assert is_publishable_size(2502, 2775)
+    assert is_publishable_size(177, 177), "a small icon is still a picture"
+
+
+def test_the_threshold_cuts_on_the_smaller_side_not_on_area() -> None:
+    """Area would keep a 600x2 rule (1200px) and drop a 33x33 icon (1089px). Sides are the test."""
+    from finepdf_to_images.domain.images import is_publishable_size
+
+    assert not is_publishable_size(600, 2)
+    assert is_publishable_size(33, 33)
+
+
+def test_a_document_whose_images_are_all_rules_contributes_nothing(
+    tmp_path: pathlib.Path,
+) -> None:
+    """#35's invariant still holds: no images means no rows, and rules are not images."""
+    from finepdf_to_images.adapters.images import ExtractedImage
+    from finepdf_to_images.domain.images import is_publishable_size
+
+    rules = [ExtractedImage(0, index, b"", "image/png", 300, 1) for index in range(5)]
+    assert [r for r in rules if is_publishable_size(r.width, r.height)] == []

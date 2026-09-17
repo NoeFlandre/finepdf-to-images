@@ -32,4 +32,5 @@ nav:
       - ADR-0014 A publication removes what it does not contain: adr/0014-a-publication-removes-what-it-does-not-contain.md
       - ADR-0015 Publish only rows that carry an image: adr/0015-publish-only-rows-that-carry-an-image.md
       - ADR-0016 One row per image: adr/0016-one-row-per-image.md
+      - ADR-0017 Discard extracted images below 32px: adr/0017-discard-images-below-32px.md
   - Technical debt: technical-debt.md
