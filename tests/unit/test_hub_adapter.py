@@ -197,3 +197,28 @@ def test_an_entry_with_neither_identity_is_omitted() -> None:
         path: str
 
     assert hub(FakeApi(entries=[Bare("x")])).file_digests("a/b") == {}
+
+
+# --------------------------------------------------------------------------- deletion
+
+
+def test_upload_emits_a_delete_operation_for_each_stale_path() -> None:
+    api = FakeApi()
+    hub(api).upload(PLAN, "m", ["data/old.jsonl", "images/ab/cd/x.png"])
+    operations = api.committed[0]["operations"]
+
+    assert len(operations) == 4, "two writes and two deletes, in one commit"
+    deletes = [op for op in operations if type(op).__name__ == "CommitOperationDelete"]
+    assert [op.path_in_repo for op in deletes] == ["data/old.jsonl", "images/ab/cd/x.png"]
+
+
+def test_upload_without_deletions_sends_only_writes() -> None:
+    api = FakeApi()
+    hub(api).upload(PLAN, "m")
+    assert all(type(op).__name__ == "CommitOperationAdd" for op in api.committed[0]["operations"])
+
+
+def test_deletions_ride_in_the_same_commit_as_the_writes() -> None:
+    api = FakeApi()
+    hub(api).upload(PLAN, "m", ["data/old.jsonl"])
+    assert len(api.committed) == 1, "a half-migrated published state must not be possible"

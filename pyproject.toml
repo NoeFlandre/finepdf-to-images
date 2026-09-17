@@ -45,6 +45,9 @@ dev = [
 line-length = 100
 src = ["src", "tests"]
 target-version = "py313"
+# Agent worktrees are checkouts of this same repository placed inside it by the harness. Linting
+# them means linting another branch's in-progress code as if it were ours.
+extend-exclude = [".claude"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "C90", "RUF", "ARG", "PTH", "TID"]
@@ -64,6 +67,13 @@ ban-relative-imports = "parents"
 
 [tool.ty.environment]
 root = ["./src", "."]
+
+# Agent worktrees are checkouts of this repository placed inside it; type-checking them means
+# type-checking another branch. Ruff excludes them for the same reason. File selection lives
+# under `src`, not `environment` -- ty rejects an unknown key outright rather than ignoring it,
+# so putting it in the wrong table failed the gate on every run.
+[tool.ty.src]
+exclude = [".claude"]
 
 [tool.coverage.run]
 branch = true

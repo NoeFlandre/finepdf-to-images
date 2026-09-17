@@ -11,6 +11,7 @@ cannot end up in a log line or a manifest.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -32,8 +33,8 @@ class Hub(Protocol):
         """The repository's current commit sha."""
         ...
 
-    def upload(self, plan: PublicationPlan, message: str) -> str:
-        """Write every planned file in one commit and return its sha."""
+    def upload(self, plan: PublicationPlan, message: str, delete: Sequence[str] = ()) -> str:
+        """Write every planned file, and remove ``delete``, in one commit. Return its sha."""
         ...
 
 
@@ -47,6 +48,9 @@ class FakeHub:
 
     files: dict[str, bytes] = field(default_factory=dict)
     commits: list[str] = field(default_factory=list)
+    #: Every path this Hub was asked to remove, so a test can assert a cleanup actually happened
+    #: rather than inferring it from what is left.
+    deleted: list[str] = field(default_factory=list)
     calls: list[str] = field(default_factory=list)
     head: str = "0" * 40
     fail_with: Exception | None = None
@@ -67,9 +71,12 @@ class FakeHub:
         self._maybe_fail()
         return self.head
 
-    def upload(self, plan: PublicationPlan, message: str) -> str:
+    def upload(self, plan: PublicationPlan, message: str, delete: Sequence[str] = ()) -> str:
         self.calls.append(f"upload:{plan.repo}")
         self._maybe_fail()
+        for path in delete:
+            self.files.pop(path, None)
+        self.deleted.extend(delete)
         for file in plan.files:
             self.files[file.path] = file.data
         self.head = f"{len(self.commits) + 1:040d}"
@@ -132,14 +139,20 @@ class HuggingFaceHub:
         except Exception as error:
             raise HubError(f"could not read {repo}: {type(error).__name__}: {error}") from error
 
-    def upload(self, plan: PublicationPlan, message: str) -> str:
-        """Write every file in **one** commit, so the published state is never half-updated."""
-        from huggingface_hub import CommitOperationAdd
+    def upload(self, plan: PublicationPlan, message: str, delete: Sequence[str] = ()) -> str:
+        """Write every file, and remove every stale one, in **one** commit.
 
-        operations = [
+        One commit because a publication is a statement of what the dataset is. Splitting the
+        additions from the deletions would leave a revision where the dataset is briefly both the
+        old shape and the new one, and a reader who fetched that revision would get neither.
+        """
+        from huggingface_hub import CommitOperationAdd, CommitOperationDelete
+
+        operations: list[Any] = [
             CommitOperationAdd(path_in_repo=file.path, path_or_fileobj=file.data)
             for file in plan.files
         ]
+        operations.extend(CommitOperationDelete(path_in_repo=path) for path in delete)
         try:
             commit = self._api().create_commit(
                 repo_id=plan.repo,

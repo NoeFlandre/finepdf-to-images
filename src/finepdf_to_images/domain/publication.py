@@ -605,13 +605,51 @@ def _jsonl(rows: Sequence[Mapping[str, Any]]) -> bytes:
     return b"".join(canonical_bytes(dict(row)) + b"\n" for row in rows)
 
 
+#: Files the Hub manages itself. Deleting this would fight the Hub over LFS tracking rules.
+HUB_MANAGED_FILES: frozenset[str] = frozenset({".gitattributes"})
+
+#: The only paths a publication may remove: the ones it writes itself.
+#:
+#: Deleting "everything the plan does not name" is the wrong default for a shared repository. A
+#: ``LICENSE``, a ``.gitignore``, an image the card links to, anything a maintainer added through
+#: the Hub's web UI -- none of those are ours to remove, and a publication that quietly deletes
+#: them is worse than one that leaves a stale file behind. An unrecognised path is left alone.
+OWNED_PREFIXES: tuple[str, ...] = ("data/", "images/", "pdfs/")
+OWNED_FILES: frozenset[str] = frozenset({CARD_FILE, MANIFEST_FILE})
+
+
+def _is_ours(path: str) -> bool:
+    return path in OWNED_FILES or path.startswith(OWNED_PREFIXES)
+
+
+def stale_paths(plan: PublicationPlan, remote: Mapping[str, str]) -> list[str]:
+    """Remote paths this plan no longer contains, and therefore should stop publishing.
+
+    A publication is a statement of what the dataset *is*, not a list of things to add to it.
+    Without this the repository only ever grows: the pilot accumulated 190 loose image files, 3
+    PDFs and four JSONL files across successive runs, none of which any later plan mentioned.
+
+    Only paths this stage writes are candidates -- see :data:`OWNED_PREFIXES`. Files the Hub
+    manages are excluded too, belt and braces, since ``.gitattributes`` is not under a prefix we
+    own and would already be spared.
+    """
+    planned = {file.path for file in plan.files}
+    return sorted(path for path in set(remote) - planned - HUB_MANAGED_FILES if _is_ours(path))
+
+
 def is_noop(plan: PublicationPlan, remote: Mapping[str, str]) -> bool:
-    """Whether every planned file is already on the Hub with exactly these bytes.
+    """Whether the Hub already holds exactly this publication -- no more, no less.
 
     ``remote`` maps path to whichever content identity the Hub reported -- a git blob id for an
     ordinary file, a SHA-256 for an LFS object. Idempotency is decided by content either way, so
     re-running the same pilot is a no-op no matter how many times it happens.
+
+    Extra remote files count. Ignoring them -- as this did before deletion existed -- meant a
+    publication whose whole purpose was removing files reported "already published and identical"
+    and removed nothing.
     """
+    if stale_paths(plan, remote):
+        return False
     return all(file.matches(remote.get(file.path)) for file in plan.files)
 
 
