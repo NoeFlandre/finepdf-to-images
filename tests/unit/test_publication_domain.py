@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+import yaml
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -329,8 +330,15 @@ def test_the_card_has_valid_yaml_front_matter() -> None:
     _, _, manifest = assembled()
     card = render_card(manifest)
     assert card.startswith("---\n")
-    assert card.count("\n---\n") >= 1
-    assert "license: odc-by" in card
+    parts = card.split("---\n", 2)
+    assert len(parts) >= 3, "card missing closing delimiter for YAML front matter"
+    meta = yaml.safe_load(parts[1])
+    assert isinstance(meta, dict)
+    assert meta["license"] == "odc-by"
+    assert meta["configs"] == [
+        {"config_name": "documents", "data_files": DOCUMENTS_FILE},
+        {"config_name": "images", "data_files": IMAGES_FILE},
+    ]
 
 
 def test_the_card_is_deterministic() -> None:

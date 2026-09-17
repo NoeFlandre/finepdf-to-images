@@ -50,6 +50,12 @@ so it is not written by hand and cannot drift.
 The schema tables are generated from `DOCUMENT_FIELDS` and `IMAGE_FIELDS`, and a test asserts every
 documented field is actually emitted.
 
+The card's YAML front matter is a **machine-read contract**, not prose. Without explicit `configs:`
+declaring `documents` (`data/documents.jsonl`) and `images` (`data/images.jsonl`) as separate
+configurations, the Hub auto-detects `data/*` as a single split, attempts to concatenate files with
+incompatible schemas, and fails with `CastError` (disabling parquet conversion and the Dataset Viewer).
+A domain test asserts that the front matter parses as valid YAML and explicitly declares both configs.
+
 ## Idempotency
 
 Publishing the same pilot output twice is an **exact no-op**: no second commit, and the existing
