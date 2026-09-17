@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import json
 import pathlib
+from typing import Any
 
 import pytest
 
 from finepdf_to_images.adapters.hub import FakeHub, HubError
+from finepdf_to_images.domain.images import image_path
 from finepdf_to_images.domain.publication import (
     CARD_FILE,
     DOCUMENTS_FILE,
@@ -20,7 +22,10 @@ from finepdf_to_images.domain.publication import (
     DOCUMENTS_RETRIEVED_FILE,
     IMAGES_FILE,
     MANIFEST_FILE,
+    PublicationError,
 )
+from finepdf_to_images.domain.retrieval import artifact_path
+from finepdf_to_images.domain.serialization import sha256_hex
 from finepdf_to_images.pipeline import PublicationResult, run_publish
 from tests.unit.test_publication_domain import (
     SAMPLING,
@@ -491,3 +496,135 @@ def test_cli_names_the_missing_field_in_a_truncated_source_block(
     args[args.index("--select-manifest") + 1] = str(truncated)
     assert run_cli(["publish", *args]) == 1
     assert "'source' is missing path" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- artifact bytes
+#
+# The loading path is the one that reads third-party bytes off disk and hands them to an upload.
+# It was the least covered code in the project when the CRAP gate first saw it, which is how a
+# publication path usually goes wrong: everything around it is tested and it is not.
+
+CLEARED_PUBLICATION = {
+    "disposition": "publish-artifact",
+    "reason": "public-domain confirmed by curated-allowlist",
+    "license": {
+        "status": "declared-open",
+        "identifier": "public-domain",
+        "evidence": "curated-allowlist",
+        "note": "ntp.niehs.nih.gov: 17 U.S.C. 105",
+    },
+}
+
+
+def _cleared_run(tmp_path: pathlib.Path, *, pdf: bytes, image: bytes) -> dict[str, Any]:
+    """A one-document run whose artifact bytes are on disk where the stage expects them."""
+    retrieval = {**retrieved_row(0), "publication": CLEARED_PUBLICATION}
+    retrieval["sha256"] = sha256_hex(pdf)
+    document = {**document_row(0), "pdf_sha256": sha256_hex(pdf)}
+    picture = {
+        **image_row(0),
+        "sha256": sha256_hex(image),
+        "pdf_sha256": sha256_hex(pdf),
+    }
+
+    pdf_root = tmp_path / "retrieve"
+    image_root = tmp_path / "extract"
+    pdf_file = pdf_root / artifact_path(sha256_hex(pdf))
+    pdf_file.parent.mkdir(parents=True, exist_ok=True)
+    pdf_file.write_bytes(pdf)
+    image_file = image_root / image_path(sha256_hex(image), "image/png")
+    image_file.parent.mkdir(parents=True, exist_ok=True)
+    image_file.write_bytes(image)
+
+    return {
+        "scored": [scored_row(0, relevant=True)],
+        "retrieved": [retrieval],
+        "documents": [document],
+        "images": [picture],
+        "pdf_root": pdf_root,
+        "image_root": image_root,
+    }
+
+
+def _publish_cleared(hub: FakeHub, run: dict[str, Any], **overrides: Any) -> PublicationResult:
+    return run_publish(
+        hub=hub,
+        repo="NoeFlandre/finepdf-to-images-poc",
+        select_manifest=SELECT_MANIFEST,
+        scored=run["scored"],
+        retrieved=run["retrieved"],
+        documents=run["documents"],
+        images=run["images"],
+        extract_manifest=EXTRACT_MANIFEST,
+        pdf_root=run["pdf_root"],
+        image_root=run["image_root"],
+        **overrides,
+    )
+
+
+def test_a_cleared_run_publishes_the_artifact_bytes(tmp_path: pathlib.Path) -> None:
+    run = _cleared_run(tmp_path, pdf=b"%PDF-1.4 cleared", image=b"\x89PNG\r\n\x1a\npixels")
+    hub = FakeHub()
+    result = _publish_cleared(hub, run, apply=True)
+
+    published = {file.path: file.data for file in result.plan.files}
+    assert published[artifact_path(sha256_hex(b"%PDF-1.4 cleared"))] == b"%PDF-1.4 cleared"
+    assert image_path(sha256_hex(b"\x89PNG\r\n\x1a\npixels"), "image/png") in published
+    assert not result.missing
+
+
+def test_the_published_row_points_at_the_bytes_that_shipped(tmp_path: pathlib.Path) -> None:
+    """The index and the payload are one statement, so the row's path must name a real file."""
+    run = _cleared_run(tmp_path, pdf=b"%PDF-1.4 cleared", image=b"\x89PNG\r\n\x1a\npixels")
+    result = _publish_cleared(FakeHub(), run)
+
+    files = {file.path for file in result.plan.files}
+    rows = [
+        json.loads(line)
+        for file in result.plan.files
+        if file.path == "data/images.jsonl"
+        for line in file.data.decode().splitlines()
+    ]
+    assert rows and all(row["image"] in files for row in rows)
+
+
+def test_bytes_that_disagree_with_the_index_are_refused(tmp_path: pathlib.Path) -> None:
+    """A truncated write or an edited working copy must not publish under the indexed digest."""
+    run = _cleared_run(tmp_path, pdf=b"%PDF-1.4 cleared", image=b"\x89PNG\r\n\x1a\npixels")
+    (run["pdf_root"] / artifact_path(sha256_hex(b"%PDF-1.4 cleared"))).write_bytes(b"%PDF- other")
+
+    with pytest.raises(PublicationError, match="refusing to publish bytes under a digest"):
+        _publish_cleared(FakeHub(), run)
+
+
+def test_without_the_roots_no_bytes_are_read_at_all(tmp_path: pathlib.Path) -> None:
+    """Omitting the roots is how a run publishes the index alone. It must not half-publish."""
+    run = _cleared_run(tmp_path, pdf=b"%PDF-1.4 cleared", image=b"\x89PNG\r\n\x1a\npixels")
+    with pytest.raises(PublicationError, match="carries no artifact"):
+        run_publish(
+            hub=FakeHub(),
+            repo="NoeFlandre/finepdf-to-images-poc",
+            select_manifest=SELECT_MANIFEST,
+            scored=run["scored"],
+            retrieved=run["retrieved"],
+            documents=run["documents"],
+            images=run["images"],
+            extract_manifest=EXTRACT_MANIFEST,
+        )
+
+
+def test_a_missing_artifact_file_fails_loudly(tmp_path: pathlib.Path) -> None:
+    run = _cleared_run(tmp_path, pdf=b"%PDF-1.4 cleared", image=b"\x89PNG\r\n\x1a\npixels")
+    (run["pdf_root"] / artifact_path(sha256_hex(b"%PDF-1.4 cleared"))).unlink()
+    with pytest.raises(OSError):
+        _publish_cleared(FakeHub(), run)
+
+
+def test_publishing_cleared_bytes_twice_is_still_a_no_op(tmp_path: pathlib.Path) -> None:
+    run = _cleared_run(tmp_path, pdf=b"%PDF-1.4 cleared", image=b"\x89PNG\r\n\x1a\npixels")
+    hub = FakeHub()
+    _publish_cleared(hub, run, apply=True)
+    commits = len(hub.commits)
+    second = _publish_cleared(hub, run, apply=True)
+    assert second.noop
+    assert len(hub.commits) == commits, "artifacts must not re-upload on every run"

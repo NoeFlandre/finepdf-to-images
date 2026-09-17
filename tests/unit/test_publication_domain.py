@@ -30,6 +30,7 @@ from finepdf_to_images.domain.publication import (
     build_image_rows,
     build_manifest,
     build_plan,
+    cleared_image_digests,
     cleared_pdf_digests,
     cleared_row_ids,
     content_digest,
@@ -970,3 +971,37 @@ def test_a_row_pointing_at_bytes_the_plan_omits_is_refused() -> None:
             images=images,
             artifacts=[PublishFile(artifact_path(PDF_SHA), PDF)],
         )
+
+
+def test_cleared_image_digests_reads_the_raw_extraction_key() -> None:
+    """REGRESSION: the raw index keys its owner as ``document_row_id``; published rows use
+    ``row_id``. Reading the wrong one matched nothing and silently published no images."""
+    images = [
+        {"document_row_id": "row-1", "sha256": PNG_SHA, "mime": "image/png"},
+        {"document_row_id": "row-2", "sha256": "b" * 64, "mime": "image/jpeg"},
+    ]
+    assert cleared_image_digests(images, frozenset({"row-1"})) == {PNG_SHA: "image/png"}
+
+
+def test_cleared_image_digests_ignores_a_published_row_shape() -> None:
+    """Passing published rows here is a silent no-op, so it is asserted rather than assumed."""
+    assert cleared_image_digests([_cleared_image()], frozenset({"row-1"})) == {}
+
+
+def test_cleared_image_digests_skips_an_unusable_digest() -> None:
+    images = [{"document_row_id": "row-1", "sha256": "not-a-digest", "mime": "image/png"}]
+    assert cleared_image_digests(images, frozenset({"row-1"})) == {}
+
+
+def test_cleared_image_digests_keeps_one_entry_per_digest() -> None:
+    """The same image on two pages is two rows and one artifact."""
+    images = [
+        {"document_row_id": "row-1", "sha256": PNG_SHA, "mime": "image/png", "page_index": 0},
+        {"document_row_id": "row-1", "sha256": PNG_SHA, "mime": "image/png", "page_index": 7},
+    ]
+    assert cleared_image_digests(images, frozenset({"row-1"})) == {PNG_SHA: "image/png"}
+
+
+def test_nothing_is_cleared_when_no_row_is() -> None:
+    images = [{"document_row_id": "row-1", "sha256": PNG_SHA, "mime": "image/png"}]
+    assert cleared_image_digests(images, frozenset()) == {}

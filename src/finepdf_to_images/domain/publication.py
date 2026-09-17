@@ -297,15 +297,19 @@ def cleared_image_digests(
 ) -> dict[str, str]:
     """Digest -> mime, for images belonging to cleared rows.
 
+    Takes the **raw** extraction index, which keys its owner as ``document_row_id``; the published
+    rows rename that to ``row_id``. Passing the wrong one silently yields nothing, so the two
+    shapes are never conflated: this is the only function that reads the raw key.
+
     Keyed by digest because the same image can appear on several pages and in several rows; it is
     published once, and every row referencing it points at that one path.
     """
-    return {
-        str(image["sha256"]): str(image.get("mime") or "")
-        for image in images
-        if str(image.get("document_row_id")) in cleared
-        and _DIGEST_RE.match(str(image.get("sha256") or ""))
-    }
+    shipped: dict[str, str] = {}
+    for image in images:
+        digest = str(image.get("sha256") or "")
+        if str(image.get("document_row_id")) in cleared and _DIGEST_RE.match(digest):
+            shipped[digest] = str(image.get("mime") or "")
+    return shipped
 
 
 def build_image_rows(
@@ -417,9 +421,14 @@ def _counts(
         "retrieved": sum(1 for row in documents if row["retrieved"]),
         "images": len(images),
         "unique_images": len({row["sha256"] for row in images}),
-        "published_images": len({row["sha256"] for row in images if row.get("image")}),
-        "published_pdfs": len({row["pdf"] for row in documents if row.get("pdf")}),
+        "published_images": len(_published_paths(images, "image")),
+        "published_pdfs": len(_published_paths(documents, "pdf")),
     }
+
+
+def _published_paths(rows: Sequence[Mapping[str, Any]], field: str) -> set[str]:
+    """The distinct artifact paths the rows point at. Empty when nothing is republished."""
+    return {str(row[field]) for row in rows if row.get(field)}
 
 
 def _validate_repo(repo: str) -> None:
@@ -427,51 +436,56 @@ def _validate_repo(repo: str) -> None:
         raise PublicationError(f"invalid destination repo {repo!r}: expected namespace/name")
 
 
+def _expected_artifact_paths(
+    documents: Sequence[Mapping[str, Any]], images: Sequence[Mapping[str, Any]]
+) -> dict[str, str]:
+    """Digest -> the one path at which that artifact may be published.
+
+    Derived from the *published rows* rather than recomputed from the raw extraction: the rows are
+    what a consumer reads, so tying the payload to them makes "the index says an image is here"
+    and "the bytes are here" the same statement. Recomputing let the two disagree -- and did: the
+    published rows key by ``row_id`` while the raw index keys by ``document_row_id``, so a
+    recomputed clearance silently matched nothing and published no images at all.
+    """
+    expected = {str(row["sha256"]): str(row["image"]) for row in images if row.get("image")}
+    expected.update({digest: artifact_path(digest) for digest in cleared_pdf_digests(documents)})
+    return expected
+
+
+def _check_one_artifact(artifact: PublishFile, expected: Mapping[str, str]) -> None:
+    """Refuse one artifact that the policy did not clear, or that is not what its path says."""
+    if not (artifact.path.startswith("pdfs/") or artifact.path.startswith("images/")):
+        raise PublicationError(f"artifact path is neither a PDF nor an image: {artifact.path!r}")
+    # Keyed by the digest of the bytes actually passed, so swapping the bytes under a cleared
+    # path does not inherit that path's clearance.
+    permitted = expected.get(artifact.sha256)
+    if permitted is None:
+        raise PublicationError(
+            f"artifact {artifact.path!r} belongs to no row cleared for byte publication. "
+            "Only the curated allow list can clear one."
+        )
+    if artifact.path != permitted:
+        raise PublicationError(
+            f"artifact path {artifact.path!r} does not match its own bytes (expected {permitted!r})"
+        )
+
+
 def _check_artifacts(
     artifacts: Sequence[PublishFile],
     documents: Sequence[Mapping[str, Any]],
     images: Sequence[Mapping[str, Any]],
 ) -> None:
-    """Refuse any artifact the policy did not clear, or that does not match its own path.
+    """Refuse any artifact the policy did not clear, and any row whose bytes are missing.
 
     This replaced a blanket interlock that refused *all* byte publication. The interlock was the
     right default while nothing implemented upload; removing it is only safe because these checks
-    replace it, so they are deliberately stricter than "the caller said so":
-
-    - the path must be the content-addressed path for the bytes actually passed, so an artifact
-      cannot be filed under another artifact's digest;
-    - the digest must belong to a row the policy cleared, which is the allow list's decision, not
-      this function's;
-    - the total is capped, so a mistake in the allow list cannot become an unbounded upload.
+    replace it, so they are deliberately stricter than "the caller said so".
     """
-    pdf_digests = cleared_pdf_digests(documents)
-    #: Derived from the published index rather than recomputed from the raw extraction: the rows
-    #: are what a consumer reads, so tying the payload to them makes "the index says an image is
-    #: here" and "the bytes are here" the same statement. Recomputing let the two disagree.
-    image_paths = {str(row["sha256"]): str(row["image"]) for row in images if row.get("image")}
-    total = 0
+    expected = _expected_artifact_paths(documents, images)
     for artifact in artifacts:
-        digest = artifact.sha256
-        total += len(artifact.data)
-        if artifact.path.startswith("pdfs/"):
-            expected, permitted = artifact_path(digest), digest in pdf_digests
-        elif artifact.path.startswith("images/"):
-            expected = image_paths.get(digest, "")
-            permitted = digest in image_paths
-        else:
-            raise PublicationError(
-                f"artifact path is neither a PDF nor an image: {artifact.path!r}"
-            )
-        if not permitted:
-            raise PublicationError(
-                f"artifact {artifact.path!r} belongs to no row cleared for byte publication. "
-                "Only the curated allow list can clear one."
-            )
-        if artifact.path != expected:
-            raise PublicationError(
-                f"artifact path {artifact.path!r} does not match its own bytes "
-                f"(expected {expected!r})"
-            )
+        _check_one_artifact(artifact, expected)
+
+    total = sum(len(artifact.data) for artifact in artifacts)
     if total > MAX_ARTIFACT_BYTES:
         raise PublicationError(
             f"total published artifact bytes {total} exceeds cap of {MAX_ARTIFACT_BYTES} bytes"
@@ -479,8 +493,8 @@ def _check_artifacts(
 
     # Last, because a specific complaint about a bad artifact is more useful than a general one
     # about a missing file, and a bad artifact usually explains the missing one.
-    expected_paths = set(image_paths.values()) | {artifact_path(digest) for digest in pdf_digests}
-    if missing := sorted(expected_paths - {artifact.path for artifact in artifacts}):
+    missing = sorted(set(expected.values()) - {artifact.path for artifact in artifacts})
+    if missing:
         raise PublicationError(
             f"{len(missing)} published row(s) point at artifact bytes that the plan does not "
             f"carry (first: {missing[0]!r}). A row pointing at a file nobody uploaded is a "
