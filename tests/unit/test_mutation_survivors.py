@@ -23,6 +23,8 @@ checked where their *content* matters (a reason a caller matches on, a field nam
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from finepdf_to_images.domain.images import ImageRecord, build_image_record, image_path
@@ -429,14 +431,45 @@ def test_every_published_document_field_carries_its_stage_value() -> None:
     }
 
 
+def _scored(row_id: str, row_index: int | None = 0, **overrides: Any) -> dict[str, Any]:
+    """A scored row with the fields the score stage always writes.
+
+    The minimal literals these tests used to pass omitted `text` and `url`, which the stage never
+    omits. Publication now refuses a populated section that is missing a field, so a fixture that
+    does not match what the pipeline produces fails -- correctly.
+    """
+    return {
+        "row_index": row_index,
+        "row_id": row_id,
+        "url": f"https://fixtures.invalid/{row_id}.pdf",
+        "text": "",
+        "relevance": {},
+        **overrides,
+    }
+
+
+def _retrieved(row_id: str, **overrides: Any) -> dict[str, Any]:
+    """A retrieval row carrying every key the retrieve stage writes, success or failure."""
+    return {
+        "row_id": row_id,
+        "ok": True,
+        "sha256": "d" * 64,
+        "byte_size": 11,
+        "final_url": f"https://fixtures.invalid/{row_id}.pdf",
+        "reason": None,
+        "publication": {},
+        **overrides,
+    }
+
+
 def test_a_document_row_is_joined_to_its_own_retrieval_and_extraction() -> None:
     """A key mutant that emptied the join would be invisible with a single row in play."""
     rows = build_document_rows(
         scored=[
-            {"row_index": 0, "row_id": "a", "relevance": {}},
-            {"row_index": 1, "row_id": "b", "relevance": {}},
+            _scored("a", 0),
+            _scored("b", 1),
         ],
-        retrieved=[{"row_id": "b", "ok": True, "sha256": "d" * 64, "byte_size": 11}],
+        retrieved=[_retrieved("b")],
         extracted=[{"row_id": "b", "image_count": 4}],
     )
     assert [(r["row_id"], r["pdf_bytes"], r["image_count"]) for r in rows] == [
@@ -452,7 +485,9 @@ def test_a_missing_number_is_published_as_zero_not_one() -> None:
     image, so the fallback has to be the value that cannot be mistaken for a measurement.
     """
     (row,) = build_document_rows(
-        scored=[{"row_index": 0, "row_id": "a", "relevance": {}}], retrieved=[], extracted=[]
+        scored=[_scored("a", 0)],
+        retrieved=[],
+        extracted=[],
     )
     assert row["pdf_bytes"] == 0
     assert row["image_count"] == 0
@@ -467,9 +502,9 @@ def test_documents_without_a_row_index_sort_after_those_that_have_one() -> None:
     """
     rows = build_document_rows(
         scored=[
-            {"row_index": None, "row_id": "n", "relevance": {}},
-            {"row_index": 2, "row_id": "b", "relevance": {}},
-            {"row_index": 1, "row_id": "a", "relevance": {}},
+            _scored("n", None),
+            _scored("b", 2),
+            _scored("a", 1),
         ],
         retrieved=[],
         extracted=[],
