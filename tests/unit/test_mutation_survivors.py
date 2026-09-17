@@ -322,7 +322,7 @@ def _image(**overrides: object) -> dict[str, object]:
         "width": 12,
         "height": 34,
         "byte_size": 56,
-        "duplicate_of": None,
+        "duplicate_of": "a" * 64 + "#0.0",
     }
     return {**image, **overrides}
 
@@ -344,7 +344,7 @@ def test_every_published_image_field_carries_the_extracted_value() -> None:
         "width": 12,
         "height": 34,
         "byte_size": 56,
-        "duplicate_of": None,
+        "duplicate_of": "a" * 64 + "#0.0",
     }
 
 
@@ -396,7 +396,7 @@ def test_every_published_document_field_carries_its_stage_value() -> None:
                 "row_id": "row-1",
                 "ok": True,
                 "final_url": "https://cdn.example.org/a.pdf",
-                "reason": "",
+                "reason": "unsupported-media-type",
                 "sha256": "c" * 64,
                 "byte_size": 2048,
                 "publication": {"disposition": "metadata-only", "license": {"status": "unknown"}},
@@ -414,7 +414,7 @@ def test_every_published_document_field_carries_its_stage_value() -> None:
         "relevance_score": 5,
         "matched_terms": ["soil", "irrigation"],
         "retrieved": True,
-        "failure_reason": "",
+        "failure_reason": "unsupported-media-type",
         "pdf_sha256": "c" * 64,
         "pdf_bytes": 2048,
         "image_count": 3,
