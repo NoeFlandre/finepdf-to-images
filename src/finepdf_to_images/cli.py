@@ -258,6 +258,16 @@ def _report_publication(result: Any, *, applied_requested: bool) -> int:
     if result.noop:
         print(f"\nno-op: every file is already published, unchanged, at {result.revision}")
         return EXIT_OK
+    return _report_outcome(result)
+
+
+def _report_outcome(result: Any) -> int:
+    """What the Hub holds after an upload, and whether that is what we sent.
+
+    Split from the reporting above so each function stays inside the complexity gate; the dry-run
+    and no-op paths return before anything has been written, and this covers only the case where
+    a commit actually happened.
+    """
     if not result.ok:
         print(
             f"\nverification FAILED; missing or mismatched: {list(result.missing)}; "
