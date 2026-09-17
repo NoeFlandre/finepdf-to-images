@@ -87,10 +87,11 @@ something real. Current result:
 
 | | |
 | --- | --- |
-| mutants | 923 |
-| killed | 766 |
-| survived | 157 |
-| kill rate | **83%** |
+| mutants | 1409 |
+| killed | 1214 |
+| survived | 184 |
+| skipped | 11 |
+| kill rate | **87%** |
 
 It is **not** a merge gate. A kill rate is a conversation, not a pass/fail line: the honest
 response to a surviving mutant is sometimes a new test and sometimes "that mutant is equivalent",
@@ -102,7 +103,7 @@ checks UI, so a crashed `mutmut` does not stand out from a clean advisory run. T
 used to hide it as well is gone, and the surviving-mutant list is uploaded as an artifact, so the
 evidence is there for anyone who looks — but nobody is forced to.
 
-The survivors were classified rather than ignored. Two classes mattered and were killed:
+The survivors were classified rather than ignored. Three classes mattered and were killed:
 
 - **Schema key names.** A mutant renaming `"dataset"` to `"DATASET"` in a manifest survived,
   because nothing asserted the exact keys — and those keys are the published contract.
@@ -110,10 +111,18 @@ The survivors were classified rather than ignored. Two classes mattered and were
   tested, so a limit that *rejects a legitimate value* was invisible. One of these would have
   rejected every connect timeout of a second or less.
 
-Both are now covered in `tests/unit/test_mutation_survivors.py`, which names the mutant each test
-kills. That took the kill rate from 72% to 83%.
+- **Published values.** Mutants replacing a lookup key with `None` — `image.get("sha256")`
+  becoming `image.get(None)` — survived across *both* published-row builders, for nearly every
+  column. The rows still carried every documented key, so the schema tests passed; the columns were
+  simply empty. Nothing asserted that a published row carries the values the earlier stages
+  produced, which is the single claim the dataset exists to make. A related survivor inverted the
+  document sort key, which no test caught because none mixed present and absent `row_index`.
 
-The remaining 157 are overwhelmingly **diagnostic-string mutations** — upper-casing a message,
+All three are covered in `tests/unit/test_mutation_survivors.py`, which names the mutant each test
+kills, and each test was checked by reintroducing its mutant by hand and watching it fail. That
+took the kill rate from 72% to 87%.
+
+The remaining 184 are overwhelmingly **diagnostic-string mutations** — upper-casing a message,
 replacing it with `None`. Chasing those would turn the tests into a transcription of the source.
 Message *content* is asserted where it matters: a reason a caller matches on, a field name a user
 needs to act.

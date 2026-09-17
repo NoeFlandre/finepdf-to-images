@@ -16,4 +16,3 @@ build/
 .mutmut-cache
 mutants/
 .DS_Store
-mutants/
