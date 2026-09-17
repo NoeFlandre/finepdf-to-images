@@ -46,6 +46,13 @@ class PypdfImageExtractor:
     declare an enormous number of images, and this pilot has no reason to unpack thousands from
     one document.
 
+    ``max_images`` **truncates**; it used to refuse the whole document. Refusing meant a gazette
+    declaring 201 images yielded nothing at all, which threw away 200 usable images to avoid
+    unpacking one too many -- and it counted every page's declared images up front, which for
+    inline images is itself the expensive part. Stopping at the cap bounds the decoding just as
+    well and leaves the output usable. The cost is that a truncated document's ``image_count`` is
+    a floor rather than a total, which the published row records.
+
     Neither bound is complete. pypdf decodes a page's **inline** images (the ``BI``/``ID``/``EI``
     operators) while merely listing that page's image names, so the work happens before any count
     can be consulted. A small document carrying 300 flate-compressed 600x600 inline images peaks
@@ -97,38 +104,13 @@ class PypdfImageExtractor:
             ) from error
 
     def _walk(self, pages: list[Any]) -> list[ExtractedImage]:
-        self._refuse_if_too_many(pages)
         images: list[ExtractedImage] = []
         for page_index, page in enumerate(pages):
             for image_index, image in enumerate(self._page_images(page, page_index)):
+                if len(images) >= self.max_images:
+                    return images
                 images.append(self._describe(image, page_index, image_index))
         return images
-
-    def _refuse_if_too_many(self, pages: list[Any]) -> None:
-        """Count declared images before decoding any of them **through our own code path**.
-
-        The count used to be checked while appending, which meant a whole page of XObjects had
-        been decoded by the time the limit was noticed: a 395 KB document declaring 300 images at
-        600x600 peaked at 283 MB before the bound fired. Counting first fixes that for XObjects.
-
-        It does **not** fix it for inline images. ``page.images.keys()`` calls pypdf's
-        ``_parse_images_from_content_stream``, which decodes every ``BI``/``ID``/``EI`` image on
-        the page in order to name it -- so a small document with 300 inline images still peaks at
-        several hundred MB. ``max_pages`` bounds how many pages can do that. Closing it properly
-        means not using pypdf's parser. Recorded as TD-008 rather than claimed as solved.
-        """
-        declared = 0
-        for page_index, page in enumerate(pages):
-            try:
-                declared += len(list(page.images.keys()))
-            except Exception as error:
-                raise ImageExtractionError(
-                    f"page {page_index} resources unreadable: {type(error).__name__}: {error}"
-                ) from error
-            if declared > self.max_images:
-                raise ImageExtractionError(
-                    f"document declares more than {self.max_images} images; refusing to unpack"
-                )
 
     def _page_images(self, page: Any, page_index: int) -> list[Any]:
         """Every image on one page, or a diagnostic.

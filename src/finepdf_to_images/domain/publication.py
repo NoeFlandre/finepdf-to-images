@@ -19,6 +19,9 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from finepdf_to_images.domain import policy
+from finepdf_to_images.domain.allowlist import allowlist_summary
+from finepdf_to_images.domain.images import image_path
+from finepdf_to_images.domain.retrieval import artifact_path
 from finepdf_to_images.domain.scoring import vocabulary_summary
 from finepdf_to_images.domain.serialization import canonical_bytes, content_digest, sha256_hex
 
@@ -31,9 +34,19 @@ DEFAULT_REPO = "NoeFlandre/finepdf-to-images-poc"
 #: The 1000-row pilot yields ~24 MB; 50 MB prevents unbounded text payload dumps.
 MAX_DOCUMENT_TEXT_BYTES = 50 * 1024 * 1024
 
+#: Hard ceiling on total published artifact bytes -- images and PDFs together.
+#:
+#: Unlike the text cap this bounds *third-party works*, so it is deliberately small. The pilot's
+#: three allow-listed sources come to under 2 MB; 64 MB leaves room to grow without any chance of
+#: a mistake in the allow list quietly turning into a multi-gigabyte redistribution.
+MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
+
 #: ``namespace/name`` as the Hub spells it. The destination is interpolated into API calls and
 #: printed in the card, so it is validated rather than trusted -- the same rule SourceRef applies
 #: to where the data comes *from*.
+#: A SHA-256 hex digest. Used to refuse artifact paths that identify nothing.
+_DIGEST_RE = re.compile(r"\A[0-9a-f]{64}\Z")
+
 _REPO_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,94}/[A-Za-z0-9][A-Za-z0-9._-]{0,94}\Z")
 
 #: Files a publication always writes, in upload order.
@@ -62,6 +75,7 @@ DOCUMENT_FIELDS: tuple[tuple[str, str], ...] = (
     ("pdf_sha256", "SHA-256 of the retrieved PDF bytes"),
     ("pdf_bytes", "size of the retrieved PDF in bytes"),
     ("image_count", "number of images extracted from the PDF"),
+    ("pdf", "path to the published source PDF, for allow-listed sources; null otherwise"),
     ("disposition", "what the publication policy permits for this artifact"),
     ("license_status", "what is known about the document's redistribution terms"),
 )
@@ -77,6 +91,7 @@ IMAGE_FIELDS: tuple[tuple[str, str], ...] = (
     ("height", "decoded height in pixels"),
     ("byte_size", "size of the extracted image in bytes"),
     ("duplicate_of", "reference to the first occurrence, when the bytes repeat"),
+    ("image", "the image itself, for allow-listed sources; null when only metadata is published"),
 )
 
 
@@ -209,9 +224,22 @@ def _document_row(
         "pdf_sha256": _text(retrieval, "sha256"),
         "pdf_bytes": _number(retrieval, "byte_size"),
         "image_count": _number(extraction, "image_count"),
+        "pdf": _published_pdf_path(publication, _text(retrieval, "sha256")),
         "disposition": _text(publication, "disposition"),
         "license_status": _text(licence, "status"),
     }
+
+
+def _published_pdf_path(publication: Mapping[str, Any], digest: str) -> str | None:
+    """Where this row's PDF is published, or ``None`` when only its metadata is.
+
+    Derived from the disposition the policy already recorded rather than taken as an argument:
+    the column then cannot disagree with the decision it reports, and a row whose bytes were never
+    cleared has no path to point at.
+    """
+    if publication.get("disposition") != str(policy.Disposition.PUBLISH_ARTIFACT):
+        return None
+    return artifact_path(digest) if _DIGEST_RE.match(digest) else None
 
 
 def _section(row: Mapping[str, Any], key: str) -> Mapping[str, Any]:
@@ -240,8 +268,56 @@ def derive_retrieved_rows(documents: Sequence[Mapping[str, Any]]) -> list[dict[s
     return [dict(row) for row in documents if bool(row.get("retrieved"))]
 
 
-def build_image_rows(images: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """The image index, reduced to the published fields and stably ordered."""
+def cleared_row_ids(documents: Sequence[Mapping[str, Any]]) -> frozenset[str]:
+    """Row ids the policy cleared for byte publication.
+
+    This is the only thing that decides whether an artifact may ship. It reads the disposition the
+    policy already wrote; it does not re-derive it, because a second implementation of the rule is
+    a second thing that can disagree with it.
+    """
+    return frozenset(
+        str(row.get("row_id"))
+        for row in documents
+        if row.get("disposition") == str(policy.Disposition.PUBLISH_ARTIFACT)
+    )
+
+
+def cleared_pdf_digests(documents: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """Digest -> row id, for the PDFs of cleared rows that actually have one."""
+    return {
+        str(row["pdf_sha256"]): str(row.get("row_id"))
+        for row in documents
+        if row.get("disposition") == str(policy.Disposition.PUBLISH_ARTIFACT)
+        and _DIGEST_RE.match(str(row.get("pdf_sha256") or ""))
+    }
+
+
+def cleared_image_digests(
+    images: Sequence[Mapping[str, Any]], cleared: frozenset[str]
+) -> dict[str, str]:
+    """Digest -> mime, for images belonging to cleared rows.
+
+    Keyed by digest because the same image can appear on several pages and in several rows; it is
+    published once, and every row referencing it points at that one path.
+    """
+    return {
+        str(image["sha256"]): str(image.get("mime") or "")
+        for image in images
+        if str(image.get("document_row_id")) in cleared
+        and _DIGEST_RE.match(str(image.get("sha256") or ""))
+    }
+
+
+def build_image_rows(
+    images: Sequence[Mapping[str, Any]], published: Mapping[str, str] | None = None
+) -> list[dict[str, Any]]:
+    """The image index, reduced to the published fields and stably ordered.
+
+    ``published`` maps the digests whose bytes ship to their media type. A row for a digest that
+    is not in it gets ``image: None`` rather than being dropped: the dataset should say what it
+    declined to publish, not hide it.
+    """
+    shipped = dict(published or {})
     rows = [
         {
             "row_id": image.get("document_row_id"),
@@ -254,6 +330,11 @@ def build_image_rows(images: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]
             "height": image.get("height"),
             "byte_size": image.get("byte_size"),
             "duplicate_of": image.get("duplicate_of"),
+            "image": (
+                image_path(str(image.get("sha256")), shipped[str(image.get("sha256"))])
+                if str(image.get("sha256")) in shipped
+                else None
+            ),
         }
         for image in images
     ]
@@ -319,6 +400,7 @@ def build_manifest(
             row.get("disposition") == "publish-artifact" for row in documents
         ),
         "policy": policy.policy_summary(),
+        "allowlist": allowlist_summary(),
         "documents_digest": doc_digest,
         "documents_relevant_digest": relevant_digest,
         "documents_retrieved_digest": retrieved_digest,
@@ -335,6 +417,8 @@ def _counts(
         "retrieved": sum(1 for row in documents if row["retrieved"]),
         "images": len(images),
         "unique_images": len({row["sha256"] for row in images}),
+        "published_images": len({row["sha256"] for row in images if row.get("image")}),
+        "published_pdfs": len({row["pdf"] for row in documents if row.get("pdf")}),
     }
 
 
@@ -343,12 +427,64 @@ def _validate_repo(repo: str) -> None:
         raise PublicationError(f"invalid destination repo {repo!r}: expected namespace/name")
 
 
-def _check_no_byte_publication(documents: Sequence[Mapping[str, Any]]) -> None:
-    cleared = [row["row_id"] for row in documents if row.get("disposition") == "publish-artifact"]
-    if cleared:
+def _check_artifacts(
+    artifacts: Sequence[PublishFile],
+    documents: Sequence[Mapping[str, Any]],
+    images: Sequence[Mapping[str, Any]],
+) -> None:
+    """Refuse any artifact the policy did not clear, or that does not match its own path.
+
+    This replaced a blanket interlock that refused *all* byte publication. The interlock was the
+    right default while nothing implemented upload; removing it is only safe because these checks
+    replace it, so they are deliberately stricter than "the caller said so":
+
+    - the path must be the content-addressed path for the bytes actually passed, so an artifact
+      cannot be filed under another artifact's digest;
+    - the digest must belong to a row the policy cleared, which is the allow list's decision, not
+      this function's;
+    - the total is capped, so a mistake in the allow list cannot become an unbounded upload.
+    """
+    pdf_digests = cleared_pdf_digests(documents)
+    #: Derived from the published index rather than recomputed from the raw extraction: the rows
+    #: are what a consumer reads, so tying the payload to them makes "the index says an image is
+    #: here" and "the bytes are here" the same statement. Recomputing let the two disagree.
+    image_paths = {str(row["sha256"]): str(row["image"]) for row in images if row.get("image")}
+    total = 0
+    for artifact in artifacts:
+        digest = artifact.sha256
+        total += len(artifact.data)
+        if artifact.path.startswith("pdfs/"):
+            expected, permitted = artifact_path(digest), digest in pdf_digests
+        elif artifact.path.startswith("images/"):
+            expected = image_paths.get(digest, "")
+            permitted = digest in image_paths
+        else:
+            raise PublicationError(
+                f"artifact path is neither a PDF nor an image: {artifact.path!r}"
+            )
+        if not permitted:
+            raise PublicationError(
+                f"artifact {artifact.path!r} belongs to no row cleared for byte publication. "
+                "Only the curated allow list can clear one."
+            )
+        if artifact.path != expected:
+            raise PublicationError(
+                f"artifact path {artifact.path!r} does not match its own bytes "
+                f"(expected {expected!r})"
+            )
+    if total > MAX_ARTIFACT_BYTES:
         raise PublicationError(
-            f"{len(cleared)} row(s) are cleared for byte publication, which this stage does not "
-            f"implement yet (first: {cleared[0]!r}). Implement artifact upload before allowing it."
+            f"total published artifact bytes {total} exceeds cap of {MAX_ARTIFACT_BYTES} bytes"
+        )
+
+    # Last, because a specific complaint about a bad artifact is more useful than a general one
+    # about a missing file, and a bad artifact usually explains the missing one.
+    expected_paths = set(image_paths.values()) | {artifact_path(digest) for digest in pdf_digests}
+    if missing := sorted(expected_paths - {artifact.path for artifact in artifacts}):
+        raise PublicationError(
+            f"{len(missing)} published row(s) point at artifact bytes that the plan does not "
+            f"carry (first: {missing[0]!r}). A row pointing at a file nobody uploaded is a "
+            "broken reference in the published dataset."
         )
 
 
@@ -377,10 +513,17 @@ def build_plan(
     manifest: Mapping[str, Any],
     documents: Sequence[Mapping[str, Any]],
     images: Sequence[Mapping[str, Any]],
+    artifacts: Sequence[PublishFile] = (),
 ) -> PublicationPlan:
-    """Everything the publication consists of, as bytes, without touching the Hub."""
+    """Everything the publication consists of, as bytes, without touching the Hub.
+
+    ``artifacts`` are the image and PDF bytes for allow-listed sources. They are validated against
+    the policy's decisions before anything is planned, so an artifact can only reach the Hub if a
+    curated allow-list entry cleared its row.
+    """
     _validate_repo(repo)
-    _check_no_byte_publication(documents)
+    _check_card_matches_payload(manifest, artifacts)
+    _check_artifacts(artifacts, documents, images)
     relevant_docs = derive_relevant_rows(documents)
     retrieved_docs = derive_retrieved_rows(documents)
     _check_text_byte_cap(documents, relevant_docs, retrieved_docs)
@@ -392,8 +535,32 @@ def build_plan(
         PublishFile(DOCUMENTS_RELEVANT_FILE, _jsonl(relevant_docs)),
         PublishFile(DOCUMENTS_RETRIEVED_FILE, _jsonl(retrieved_docs)),
         PublishFile(IMAGES_FILE, _jsonl(images)),
+        *sorted(artifacts, key=lambda file: file.path),
     )
     return PublicationPlan(repo=repo, files=files, manifest=manifest)
+
+
+def _check_card_matches_payload(
+    manifest: Mapping[str, Any], artifacts: Sequence[PublishFile]
+) -> None:
+    """The card's claim about byte publication must match what is actually uploaded.
+
+    ``publishes_source_bytes`` is derived from the policy's dispositions, while the payload is
+    whatever the caller passed. Nothing tied the two together: a cleared row made the card announce
+    republished source bytes even when the plan contained only the index, which is a published
+    falsehood in either direction.
+    """
+    claimed = bool(manifest.get("publishes_source_bytes"))
+    if claimed and not artifacts:
+        raise PublicationError(
+            "the manifest claims source bytes are republished, but the plan carries no artifact. "
+            "Pass the artifacts, or publish rows the policy did not clear as metadata only."
+        )
+    if artifacts and not claimed:
+        raise PublicationError(
+            f"the plan carries {len(artifacts)} artifact(s) while the manifest claims no source "
+            "bytes are republished."
+        )
 
 
 def _jsonl(rows: Sequence[Mapping[str, Any]]) -> bytes:
@@ -408,6 +575,46 @@ def is_noop(plan: PublicationPlan, remote: Mapping[str, str]) -> bool:
     re-running the same pilot is a no-op no matter how many times it happens.
     """
     return all(file.matches(remote.get(file.path)) for file in plan.files)
+
+
+#: How each published image column is typed for the Hub. ``image`` is the point of the exercise:
+#: without a declared ``image`` dtype the column is inferred as a string and the viewer shows a
+#: path instead of a picture.
+_IMAGE_DTYPES: Mapping[str, str] = {
+    "row_id": "string",
+    "pdf_sha256": "string",
+    "page_index": "int64",
+    "image_index": "int64",
+    "sha256": "string",
+    "mime": "string",
+    "width": "int64",
+    "height": "int64",
+    "byte_size": "int64",
+    "duplicate_of": "string",
+    "image": "image",
+}
+
+
+def _image_features() -> str:
+    """The ``features`` block for the images config, generated from the published schema.
+
+    Generated rather than written so a new column cannot be added to the rows and forgotten here,
+    which would make the declared schema disagree with the data and fail the viewer outright.
+    """
+    return "\n".join(
+        f"      - name: {field}\n        dtype: {_IMAGE_DTYPES[field]}" for field, _ in IMAGE_FIELDS
+    )
+
+
+def _allowlist_table(manifest: Mapping[str, Any]) -> str:
+    """The allow list as a card table, generated from the manifest that records it."""
+    entries = manifest.get("allowlist") or ()
+    if not entries:
+        return "_No sources are allow listed, so no bytes are republished._"
+    rows = "\n".join(
+        f"| `{entry['host']}` | `{entry['identifier']}` | {entry['basis']} |" for entry in entries
+    )
+    return f"| host | identifier | basis |\n| --- | --- | --- |\n{rows}"
 
 
 def _table(fields: Sequence[tuple[str, str]]) -> str:
@@ -428,8 +635,15 @@ def render_card(manifest: Mapping[str, Any]) -> str:
     seed = sampling["seed"]
     rules = manifest["policy"]
     vocabulary = vocabulary_summary()
+    counts = manifest["counts"]
     bytes_note = (
-        "Some source bytes are republished; see the per-row `disposition`."
+        (
+            f"**{counts.get('published_pdfs', 0)} source PDF(s) and "
+            f"{counts.get('published_images', 0)} image(s) are republished**, from the "
+            "allow-listed sources listed under Licensing below. Every other row is "
+            "`metadata-only`: the hash and provenance are here, the bytes are not. See the "
+            "per-row `disposition`, `pdf` and `image`."
+        )
         if manifest["publishes_source_bytes"]
         else (
             "**No source PDF or image bytes are republished.** Every artifact resolved to "
@@ -451,6 +665,10 @@ configs:
     data_files:
       - split: train
         path: {IMAGES_FILE}
+dataset_info:
+  - config_name: images
+    features:
+{_image_features()}
 license: odc-by
 task_categories:
 - text-classification
@@ -551,7 +769,18 @@ uses the vocabulary, and it will flag one that mentions farming in passing.
 
 Default disposition: **`{rules["default_disposition"]}`**. Bytes are republished only for a
 `declared-open` status carrying an allow-listed identifier *and* backed by a human decision
-recorded in the source repository. This pilot ships no such entries.
+recorded in the source repository.
+
+None of these documents states a licence in its own text. The sources below are open by **statute**
+rather than by declaration, which is why each entry cites the instrument it rests on rather than a
+licence file. Every host in a retrieval's redirect chain must match one of these exactly; a chain
+that leaves the host does not keep its permission.
+
+{_allowlist_table(manifest)}
+
+These are readings of the law, not licences obtained from a rights holder, and the EU Decision in
+particular does not extend to third-party material a document may quote. If you hold rights in
+anything published here, the takedown route below is honoured without requiring you to prove it.
 
 Every row carries enough provenance — dataset, revision, config, split, shard, row index, row id
 and URL — to trace it back to the exact FinePDFs row and source document.

@@ -193,30 +193,35 @@ def test_empty_bytes_are_refused(extractor: PypdfImageExtractor) -> None:
         extractor.extract(b"")
 
 
-def test_a_document_declaring_too_many_images_is_refused() -> None:
-    """A bound, not a preference: a hostile PDF can declare an enormous number of XObjects."""
-    with pytest.raises(ImageExtractionError, match="refusing to unpack"):
-        PypdfImageExtractor(max_images=1).extract(pdf("two-images.pdf"))
+def test_the_image_bound_truncates_rather_than_refusing_the_document() -> None:
+    """A bound, not a preference -- but a bound that yields nothing is a worse bound.
+
+    Refusing outright meant a document declaring one image too many produced *no* images at all.
+    One of the pilot's three allow-listed sources is exactly that case: a gazette declaring more
+    than 200 images, which published no image while the refusal stood.
+    """
+    images = PypdfImageExtractor(max_images=1).extract(pdf("two-images.pdf"))
+    assert len(images) == 1
 
 
-def test_the_limit_fires_before_our_own_decoding_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_no_image_is_decoded_past_the_bound(monkeypatch: pytest.MonkeyPatch) -> None:
     """REGRESSION: the count was checked while appending, so a whole page of XObjects had been
     decoded before the bound was noticed -- 283 MB on a 395 KB document.
 
-    This asserts only that *our* decode path does not run. It cannot observe decoding inside
-    pypdf, which is exactly the remaining gap TD-008 records: an earlier version of this test was
-    read as proving the bound complete, and it never could.
+    Truncation has to keep that property: decoding must stop *at* the cap, not run to the end of
+    the document and slice. This asserts only that *our* decode path stops. It cannot observe
+    decoding inside pypdf, which is the gap TD-008 records.
     """
     decoded: list[int] = []
+    original = PypdfImageExtractor._describe
 
     def spy(self: object, image: object, page_index: int, image_index: int) -> object:
         decoded.append(1)
-        raise AssertionError("no image may be decoded once the limit is known to be exceeded")
+        return original(self, image, page_index, image_index)  # ty: ignore[invalid-argument-type]
 
     monkeypatch.setattr(PypdfImageExtractor, "_describe", spy)
-    with pytest.raises(ImageExtractionError, match="refusing to unpack"):
-        PypdfImageExtractor(max_images=1).extract(pdf("two-images.pdf"))
-    assert decoded == []
+    assert len(PypdfImageExtractor(max_images=1).extract(pdf("two-images.pdf"))) == 1
+    assert decoded == [1], "decoding must stop at the cap, not continue and discard"
 
 
 def test_a_document_with_too_many_pages_is_refused() -> None:

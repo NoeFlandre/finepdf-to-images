@@ -10,6 +10,8 @@ import yaml
 from hypothesis import given
 from hypothesis import strategies as st
 
+from finepdf_to_images.domain.allowlist import allowlist_summary
+from finepdf_to_images.domain.images import image_path
 from finepdf_to_images.domain.publication import (
     CARD_FILE,
     DOCUMENT_FIELDS,
@@ -19,19 +21,24 @@ from finepdf_to_images.domain.publication import (
     IMAGE_FIELDS,
     IMAGES_FILE,
     MANIFEST_FILE,
+    MAX_ARTIFACT_BYTES,
     MAX_DOCUMENT_TEXT_BYTES,
     SCHEMA_VERSION,
     PublicationError,
+    PublishFile,
     build_document_rows,
     build_image_rows,
     build_manifest,
     build_plan,
+    cleared_pdf_digests,
+    cleared_row_ids,
     content_digest,
     derive_relevant_rows,
     derive_retrieved_rows,
     is_noop,
     render_card,
 )
+from finepdf_to_images.domain.retrieval import artifact_path
 from finepdf_to_images.domain.serialization import sha256_hex
 
 SOURCE = {
@@ -194,6 +201,8 @@ def test_the_manifest_records_source_sampling_and_counts() -> None:
         "retrieved": 1,
         "images": 1,
         "unique_images": 1,
+        "published_images": 0,
+        "published_pdfs": 0,
     }
     assert manifest["splits"] == {
         "documents": {
@@ -517,9 +526,12 @@ def test_a_noop_is_recognised_from_git_blob_ids() -> None:
     assert is_noop(plan, {file.path: file.git_blob_sha1 for file in plan.files})
 
 
-def test_a_cleared_row_is_refused_until_byte_publication_exists() -> None:
+def test_a_card_claiming_published_bytes_is_refused_without_them() -> None:
     """REGRESSION: the card's "some source bytes are republished" sentence could fire while the
-    plan still contained only the index -- a published falsehood."""
+    plan still contained only the index -- a published falsehood.
+
+    This used to be guaranteed by refusing byte publication outright. Now that artifacts can
+    ship, the claim and the payload are checked against each other instead."""
     documents, images, manifest = assembled()
     documents[0]["disposition"] = "publish-artifact"
     manifest = build_manifest(
@@ -530,7 +542,7 @@ def test_a_cleared_row_is_refused_until_byte_publication_exists() -> None:
         vocabulary_version=3,
     )
     assert manifest["publishes_source_bytes"] is True
-    with pytest.raises(PublicationError, match="does not implement"):
+    with pytest.raises(PublicationError, match="carries no artifact"):
         build_plan(repo="a/b", manifest=manifest, documents=documents, images=images)
 
 
@@ -713,3 +725,248 @@ def test_the_card_documents_splits_and_files() -> None:
     assert f"- `documents` (`relevant`): `{manifest['documents_relevant_digest'][:16]}…`" in card
     assert f"- `documents` (`retrieved`): `{manifest['documents_retrieved_digest'][:16]}…`" in card
     assert f"- `images` (`train`): `{manifest['images_digest'][:16]}…`" in card
+
+
+# --------------------------------------------------------------- publishing artifact bytes
+#
+# This is the only path in the project that can put a third party's work on the internet. The
+# tests here are about what it refuses: the checks replaced a blanket interlock that refused all
+# byte publication, so they have to be stricter than "the caller passed it in".
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"pixels"
+PNG_SHA = sha256_hex(PNG)
+PDF = b"%PDF-1.4 body"
+PDF_SHA = sha256_hex(PDF)
+
+
+def _cleared_doc(**overrides: Any) -> dict[str, Any]:
+    row = {
+        "row_index": 0,
+        "row_id": "row-1",
+        "relevant": True,
+        "retrieved": True,
+        "pdf_sha256": PDF_SHA,
+        "pdf": artifact_path(PDF_SHA),
+        "disposition": "publish-artifact",
+    }
+    return {**row, **overrides}
+
+
+def _cleared_image(**overrides: Any) -> dict[str, Any]:
+    """A *published* image row -- the shape ``build_plan`` sees, with the rendered path resolved."""
+    image = {
+        "row_id": "row-1",
+        "sha256": PNG_SHA,
+        "mime": "image/png",
+        "page_index": 0,
+        "image_index": 0,
+        "image": image_path(PNG_SHA, "image/png"),
+    }
+    return {**image, **overrides}
+
+
+def _manifest_claiming_bytes(documents: list[dict[str, Any]]) -> dict[str, Any]:
+    _, _, manifest = assembled()
+    return {
+        **manifest,
+        "publishes_source_bytes": any(
+            row.get("disposition") == "publish-artifact" for row in documents
+        ),
+    }
+
+
+def test_a_cleared_row_publishes_its_pdf_and_image_bytes() -> None:
+    documents = [_cleared_doc()]
+    images = [_cleared_image()]
+    plan = build_plan(
+        repo="a/b",
+        manifest=_manifest_claiming_bytes(documents),
+        documents=documents,
+        images=images,
+        artifacts=[
+            PublishFile(artifact_path(PDF_SHA), PDF),
+            PublishFile(image_path(PNG_SHA, "image/png"), PNG),
+        ],
+    )
+    paths = [file.path for file in plan.files]
+    assert artifact_path(PDF_SHA) in paths
+    assert image_path(PNG_SHA, "image/png") in paths
+
+
+def test_an_artifact_for_an_uncleared_row_is_refused() -> None:
+    """The whole point. Only the curated allow list can clear a row, and it did not clear this one.
+
+    The cleared row here is a *different* document, so the manifest legitimately claims bytes are
+    republished; the artifact offered belongs to the uncleared one.
+    """
+    documents = [
+        _cleared_doc(),
+        _cleared_doc(
+            row_id="row-2", pdf_sha256=sha256_hex(b"other"), pdf=None, disposition="metadata-only"
+        ),
+    ]
+    with pytest.raises(PublicationError, match="cleared for byte publication"):
+        build_plan(
+            repo="a/b",
+            manifest=_manifest_claiming_bytes(documents),
+            documents=documents,
+            images=[],
+            artifacts=[
+                PublishFile(artifact_path(PDF_SHA), PDF),
+                PublishFile(artifact_path(sha256_hex(b"other")), b"other"),
+            ],
+        )
+
+
+def test_an_artifact_at_a_hand_written_path_is_refused() -> None:
+    """Content addressing is worthless if the path can disagree with the bytes.
+
+    The bytes here *are* cleared, so this is not the allow-list check firing: it is the path
+    check, which is what keeps a published artifact self-verifying.
+    """
+    documents = [_cleared_doc()]
+    with pytest.raises(PublicationError, match="does not match its own bytes"):
+        build_plan(
+            repo="a/b",
+            manifest=_manifest_claiming_bytes(documents),
+            documents=documents,
+            images=[],
+            artifacts=[PublishFile(f"pdfs/{PDF_SHA}.pdf", PDF)],
+        )
+
+
+def test_bytes_that_hash_to_an_uncleared_digest_are_refused() -> None:
+    """Swapping the bytes under a cleared path does not inherit that path's clearance."""
+    documents = [_cleared_doc()]
+    with pytest.raises(PublicationError, match="cleared for byte publication"):
+        build_plan(
+            repo="a/b",
+            manifest=_manifest_claiming_bytes(documents),
+            documents=documents,
+            images=[],
+            artifacts=[PublishFile(artifact_path(PDF_SHA), b"different bytes entirely")],
+        )
+
+
+def test_an_artifact_outside_the_known_prefixes_is_refused() -> None:
+    documents = [_cleared_doc()]
+    with pytest.raises(PublicationError, match="neither a PDF nor an image"):
+        build_plan(
+            repo="a/b",
+            manifest=_manifest_claiming_bytes(documents),
+            documents=documents,
+            images=[],
+            artifacts=[PublishFile("../../etc/passwd", PDF)],
+        )
+
+
+def test_an_image_the_index_does_not_claim_is_refused() -> None:
+    """The index and the payload are one statement: bytes for a row saying ``image: null``
+    would be a file no published row points at."""
+    documents = [_cleared_doc()]
+    images = [_cleared_image(image=None)]
+    with pytest.raises(PublicationError, match="cleared for byte publication"):
+        build_plan(
+            repo="a/b",
+            manifest=_manifest_claiming_bytes(documents),
+            documents=documents,
+            images=images,
+            artifacts=[PublishFile(image_path(PNG_SHA, "image/png"), PNG)],
+        )
+
+
+def test_total_artifact_bytes_are_capped() -> None:
+    oversized = b"\x89PNG\r\n\x1a\n" + b"x" * MAX_ARTIFACT_BYTES
+    digest = sha256_hex(oversized)
+    documents = [_cleared_doc(pdf_sha256=digest, pdf=artifact_path(digest))]
+    with pytest.raises(PublicationError, match="exceeds cap"):
+        build_plan(
+            repo="a/b",
+            manifest=_manifest_claiming_bytes(documents),
+            documents=documents,
+            images=[],
+            artifacts=[PublishFile(artifact_path(digest), oversized)],
+        )
+
+
+def test_a_plan_with_artifacts_but_no_claim_is_refused() -> None:
+    """The card and the payload must agree in both directions, not just one."""
+    documents = [_cleared_doc()]
+    manifest = {**_manifest_claiming_bytes(documents), "publishes_source_bytes": False}
+    with pytest.raises(PublicationError, match="claims no source bytes"):
+        build_plan(
+            repo="a/b",
+            manifest=manifest,
+            documents=documents,
+            images=[],
+            artifacts=[PublishFile(artifact_path(PDF_SHA), PDF)],
+        )
+
+
+def test_an_image_row_points_at_its_published_bytes_only_when_they_ship() -> None:
+    images = [_cleared_image(), _cleared_image(document_row_id="row-2", sha256="b" * 64)]
+    rows = build_image_rows(images, {PNG_SHA: "image/png"})
+    by_digest = {row["sha256"]: row for row in rows}
+    assert by_digest[PNG_SHA]["image"] == image_path(PNG_SHA, "image/png")
+    assert by_digest["b" * 64]["image"] is None
+
+
+def test_cleared_helpers_read_the_policy_decision_rather_than_re_deriving_it() -> None:
+    documents = [_cleared_doc(), _cleared_doc(row_id="row-2", disposition="metadata-only")]
+    assert cleared_row_ids(documents) == frozenset({"row-1"})
+    assert cleared_pdf_digests(documents) == {PDF_SHA: "row-1"}
+
+
+def test_a_cleared_row_without_a_usable_digest_contributes_no_artifact() -> None:
+    documents = [_cleared_doc(pdf_sha256="", pdf=None)]
+    assert cleared_pdf_digests(documents) == {}
+
+
+def test_the_card_declares_the_image_column_as_an_image() -> None:
+    """Without this the viewer renders a path string instead of a picture."""
+    _, _, manifest = assembled()
+    front_matter = yaml.safe_load(render_card(manifest).split("---")[1])
+    features = {entry["config_name"]: entry["features"] for entry in front_matter["dataset_info"]}
+    typed = {feature["name"]: feature["dtype"] for feature in features["images"]}
+    assert typed["image"] == "image"
+    assert set(typed) == {field for field, _ in IMAGE_FIELDS}
+
+
+def test_the_card_names_every_allow_listed_source_and_its_basis() -> None:
+    """The allow list is the project's main standing risk, so it is published, not just applied."""
+    _, _, manifest = assembled()
+    card = render_card(manifest)
+    for entry in manifest["allowlist"]:
+        assert f"`{entry['host']}`" in card
+        assert entry["basis"] in card
+
+
+def test_the_manifest_records_the_allow_list() -> None:
+    _, _, manifest = assembled()
+    assert manifest["allowlist"] == allowlist_summary()
+    assert manifest["allowlist"], "an empty allow list would make the card claim nothing is cleared"
+
+
+def test_the_card_states_the_published_artifact_counts_when_bytes_ship() -> None:
+    documents = [_cleared_doc()]
+    base = _manifest_claiming_bytes(documents)
+    manifest = {
+        **base,
+        "counts": {**base["counts"], "published_pdfs": 1, "published_images": 2},
+    }
+    card = render_card(manifest)
+    assert "1 source PDF(s) and 2 image(s) are republished" in card
+
+
+def test_a_row_pointing_at_bytes_the_plan_omits_is_refused() -> None:
+    """A published row naming an image nobody uploaded is a 404 in the dataset viewer."""
+    documents = [_cleared_doc()]
+    images = [_cleared_image()]
+    with pytest.raises(PublicationError, match="does not carry"):
+        build_plan(
+            repo="a/b",
+            manifest=_manifest_claiming_bytes(documents),
+            documents=documents,
+            images=images,
+            artifacts=[PublishFile(artifact_path(PDF_SHA), PDF)],
+        )
