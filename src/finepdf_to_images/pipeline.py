@@ -286,16 +286,9 @@ def run_retrieve(
 
         retrieved += _store(record, body, seen, entry, out_dir)
 
-        # Explicit field pick rather than a blanket merge: relying on the select manifest's
-        # source block never growing a `url` or `row_index` key is a fragile contract.
-        provenance = {
-            **{key: source.get(key) for key in ("dataset", "revision", "config", "split", "shard")},
-            "row_index": record.row_index,
-            "row_id": record.row_id,
-            "url": record.url,
-            "sha256": record.sha256,
-        }
-        entry["publication"] = policy.decide(provenance, require_artifact_hash=record.ok).as_dict()
+        entry["publication"] = policy.decide(
+            _provenance_for(record, source), require_artifact_hash=record.ok
+        ).as_dict()
         records.append(entry)
 
     manifest: dict[str, Any] = {

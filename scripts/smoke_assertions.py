@@ -27,8 +27,10 @@ def relevant_count(scored: pathlib.Path) -> int:
 
 def check_retrieve(manifest: pathlib.Path, expected: int) -> None:
     """Offline, every attempt must fail -- and must fail with a recorded reason."""
-    counts = json.loads(manifest.read_text(encoding="utf-8"))["counts"]
-    failures = json.loads(manifest.read_text(encoding="utf-8"))["failures"]
+    parsed = json.loads(manifest.read_text(encoding="utf-8"))
+    counts, failures = parsed.get("counts"), parsed.get("failures")
+    if not isinstance(counts, dict) or not isinstance(failures, dict):
+        raise SystemExit(f"{manifest} is not a retrieve manifest: {sorted(parsed)}")
     if counts["attempted"] != expected:
         raise SystemExit(f"expected {expected} attempts, got {counts}")
     if counts["failed"] != expected or counts["retrieved"] != 0:
@@ -64,7 +66,10 @@ def stage_pdfs(root: pathlib.Path) -> None:
 
 def check_extract(out: pathlib.Path) -> None:
     """The stage must really decode images, not just start and write an empty manifest."""
-    counts = json.loads((out / "manifest.json").read_text(encoding="utf-8"))["counts"]
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    counts = manifest.get("counts")
+    if not isinstance(counts, dict):
+        raise SystemExit(f"{out / 'manifest.json'} has no counts block: {manifest.keys()}")
     expectations = {
         "documents": len(STAGED_PDFS),
         "images": 2,
@@ -72,7 +77,9 @@ def check_extract(out: pathlib.Path) -> None:
         "documents_failed": 1,
     }
     for key, expected in expectations.items():
-        if counts[key] != expected:
+        # `.get` rather than `[]`: pointed at the wrong manifest this should say so, not raise a
+        # bare KeyError traceback out of a shell gate.
+        if counts.get(key) != expected:
             raise SystemExit(f"expected {key}={expected}, got {counts}")
     written = [path for path in (out / "images").rglob("*") if path.is_file()]
     if not written:

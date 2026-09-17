@@ -17,7 +17,7 @@ baseline -> Ruff -> ty -> tests -> property tests -> acceptance tests
 | 6 | Acceptance scenarios | `uv run pytest -m acceptance` | yes |
 | 7 | Architecture checks | `uv run pytest -m architecture` | yes |
 | 8 | CRAP | `uv run python scripts/crap.py` | yes |
-| 9 | Mutation tests | `uv run mutmut run` | **no — advisory** (but its own failure is visible) |
+| 9 | Mutation tests | `uv run mutmut run` | **no — advisory** |
 | 10 | Smoke (CLI + Docker) | `bash scripts/smoke.sh` | yes |
 | 11 | Diff review | a human, and an independent agent | by convention |
 
@@ -59,6 +59,11 @@ regression tests, because an earlier version of it silently matched nothing.
 CRAP(f) = complexity(f)² × (1 − coverage(f))³ + complexity(f)
 ```
 
+A function with **no** recorded statements is treated as *unmeasured*, not as fully covered, and
+fails the gate. That distinction is the whole difference between a gate and a formality: an empty
+coverage report, or one generated before a file grew, otherwise scores every function at 100% and
+passes having measured nothing. Both cases are covered by fixtures in the review history.
+
 How dangerous a function is to change. High when it is both complicated and poorly covered;
 collapses toward raw complexity as coverage approaches 100%. **Threshold 6** — at full coverage a
 function may be as complex as 6; at 80% coverage the ceiling is about 3.
@@ -86,6 +91,11 @@ It is **not** a merge gate. A kill rate is a conversation, not a pass/fail line:
 response to a surviving mutant is sometimes a new test and sometimes "that mutant is equivalent",
 and blocking on a percentage rewards writing assertions that mirror the source rather than the
 behaviour.
+
+Being advisory has a cost worth stating: `continue-on-error` makes the job **neutral** in the
+checks UI, so a crashed `mutmut` does not stand out from a clean advisory run. The `|| true` that
+used to hide it as well is gone, and the surviving-mutant list is uploaded as an artifact, so the
+evidence is there for anyone who looks — but nobody is forced to.
 
 The survivors were classified rather than ignored. Two classes mattered and were killed:
 

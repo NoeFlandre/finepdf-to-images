@@ -320,6 +320,45 @@ def test_a_zero_image_document_is_recorded_as_a_success(tmp_path: pathlib.Path) 
     assert document["error"] == ""
 
 
+def test_a_non_numeric_row_index_is_one_failure_not_a_lost_run(tmp_path: pathlib.Path) -> None:
+    """REGRESSION: the identity coercion was hoisted out of the try during a complexity refactor,
+    so ``int("not-a-number")`` escaped run_extract again and lost every document already
+    extracted -- while the comment beside it claimed the case was handled.
+
+    This test was claimed in the commit that fixed it and was not actually there, which is how the
+    same mistake would have been made a third time.
+    """
+    good = pdf("two-images.pdf")
+    digest = sha256_hex(good)
+    root = tmp_path / "root"
+    write_bytes(root / artifact_path(digest), good)
+    result = run_extract(
+        extractor=PypdfImageExtractor(),
+        records=[
+            {
+                "row_index": "not-a-number",
+                "row_id": "a",
+                "ok": True,
+                "sha256": digest,
+                "path": artifact_path(digest),
+            },
+            {
+                "row_index": 1,
+                "row_id": "b",
+                "ok": True,
+                "sha256": digest,
+                "path": artifact_path(digest),
+            },
+        ],
+        pdf_root=root,
+        out_dir=tmp_path / "out",
+    )
+    assert result.failed == 1
+    assert result.images == 2, "the good document must still be extracted"
+    assert result.manifest_path.is_file(), "the manifest must still be written"
+    assert "ValueError" in read_jsonl(result.documents_path)[0]["error"]
+
+
 def test_a_malformed_document_fails_without_partial_output(tmp_path: pathlib.Path) -> None:
     result, out = staged(["malformed.pdf"], tmp_path)
     assert result.failed == 1

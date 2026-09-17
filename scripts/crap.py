@@ -40,6 +40,16 @@ class Score:
     total: int
 
     @property
+    def measured(self) -> bool:
+        """Whether the report said anything at all about this function.
+
+        A function with no recorded statements is *unmeasured*, not fully covered. Treating the
+        two as the same was the hole that let an empty report -- or one generated before the file
+        grew -- pass this gate having measured nothing.
+        """
+        return self.total > 0
+
+    @property
     def coverage(self) -> float:
         """Fraction of this function's statements that the test suite executed."""
         return 1.0 if self.total == 0 else self.covered / self.total
@@ -119,11 +129,17 @@ def _matching_key(path: pathlib.Path, hits: dict[str, dict[int, int]], root: pat
     not describe the code being measured.
     """
     relative = path.relative_to(root).as_posix()
-    for key in hits:
-        if pathlib.PurePosixPath(key).as_posix().endswith(relative) and (
-            key == relative or key.endswith(f"/{relative}")
-        ):
-            return key
+    # Exact first. Falling straight into the suffix loop let dictionary order decide, so a
+    # subdirectory entry could capture a top-level file just as easily as the reverse.
+    if relative in hits:
+        return relative
+    candidates = sorted(key for key in hits if key.endswith(f"/{relative}"))
+    if len(candidates) == 1:
+        return candidates[0]
+    if candidates:
+        raise SystemExit(
+            f"{path} matches several coverage entries {candidates}; the report is ambiguous."
+        )
     raise SystemExit(
         f"{path} has no entry in the coverage report (looked for {relative!r}). "
         "The report is stale or was produced from a different tree; re-run pytest --cov."
@@ -145,6 +161,17 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"no functions found under {args.source}")
 
     worst = sorted(results, key=lambda score: (-score.crap, score.module, score.line))
+    unmeasured = [score for score in worst if not score.measured and score.complexity > 1]
+    if unmeasured:
+        print(
+            f"{len(unmeasured)} function(s) have no coverage data at all. The report is stale or "
+            "was produced from a different tree; re-run pytest --cov.",
+            file=sys.stderr,
+        )
+        for score in unmeasured[:10]:
+            print(f"  {score.module}:{score.line} {score.name}", file=sys.stderr)
+        return 1
+
     over = [score for score in worst if score.crap > args.threshold]
 
     print(f"{'CRAP':>6}  {'CC':>3}  {'COV':>6}  FUNCTION")
