@@ -16,3 +16,4 @@ us, including what it makes harder).
 - [ADR-0008 — Quality gauntlet](0008-quality-gauntlet.md)
 - [ADR-0009 — Publish an index, not a document dump](0009-publish-metadata-not-documents.md)
 - [ADR-0010 — Declare explicit dataset configs in the card front matter](0010-dataset-viewer-configs.md)
+- [ADR-0011 — Publish extracted document text under ODC-BY](0011-publish-extracted-text.md)

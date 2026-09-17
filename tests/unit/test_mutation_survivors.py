@@ -383,6 +383,8 @@ def test_every_published_document_field_carries_its_stage_value() -> None:
                 "row_index": 7,
                 "row_id": "row-1",
                 "url": "https://example.org/a.pdf",
+                "text": "soil irrigation practices",
+                "text_sha256": sha256_hex(b"soil irrigation practices"),
                 "relevance": {
                     "language": "eng_Latn",
                     "relevant": True,
@@ -410,6 +412,8 @@ def test_every_published_document_field_carries_its_stage_value() -> None:
         "url": "https://example.org/a.pdf",
         "final_url": "https://cdn.example.org/a.pdf",
         "language": "eng_Latn",
+        "text": "soil irrigation practices",
+        "text_sha256": sha256_hex(b"soil irrigation practices"),
         "relevant": True,
         "relevance_score": 5,
         "matched_terms": ["soil", "irrigation"],

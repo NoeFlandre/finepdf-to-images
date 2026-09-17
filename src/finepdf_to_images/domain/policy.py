@@ -28,7 +28,9 @@ from typing import Any
 #: Attribution required by the source dataset's own licence.
 SOURCE_ATTRIBUTION = (
     "Source documents were identified through HuggingFaceFW/finepdfs "
-    "(https://huggingface.co/datasets/HuggingFaceFW/finepdfs), licensed ODC-BY."
+    "(https://huggingface.co/datasets/HuggingFaceFW/finepdfs), licensed ODC-BY. "
+    "Extracted document text is republished under ODC-BY; downstream distribution "
+    "or reuse must attribute HuggingFaceFW/finepdfs."
 )
 
 #: Where to report a problem with a published artifact. Deliberately a public issue tracker rather

@@ -16,6 +16,7 @@ from finepdf_to_images.domain.publication import (
     IMAGE_FIELDS,
     IMAGES_FILE,
     MANIFEST_FILE,
+    MAX_DOCUMENT_TEXT_BYTES,
     SCHEMA_VERSION,
     PublicationError,
     build_document_rows,
@@ -38,11 +39,13 @@ SOURCE = {
 SAMPLING = {"limit": 20, "seed": "finepdf-to-images/v1", "strategy": "head"}
 
 
-def scored_row(index: int, *, relevant: bool = True) -> dict[str, Any]:
+def scored_row(index: int, *, relevant: bool = True, text: str = "sample text") -> dict[str, Any]:
     return {
         "row_index": index,
         "row_id": f"<urn:uuid:{index:012d}>",
         "url": f"https://fixtures.invalid/{index}.pdf",
+        "text": text,
+        "text_sha256": sha256_hex(text.encode("utf-8")),
         "relevance": {
             "relevant": relevant,
             "score": 3 if relevant else 0,
@@ -445,3 +448,81 @@ def test_a_cleared_row_is_refused_until_byte_publication_exists() -> None:
     assert manifest["publishes_source_bytes"] is True
     with pytest.raises(PublicationError, match="does not implement"):
         build_plan(repo="a/b", manifest=manifest, documents=documents, images=images)
+
+
+def test_every_published_document_row_carries_text_and_text_sha256() -> None:
+    text = "Sample agricultural document text."
+    digest = sha256_hex(text.encode("utf-8"))
+    scored = [
+        {
+            "row_index": 0,
+            "row_id": "row-1",
+            "url": "https://example.org/1.pdf",
+            "text": text,
+            "text_sha256": digest,
+            "relevance": {
+                "relevant": True,
+                "score": 1,
+                "matched_terms": ["soil"],
+                "language": "eng_Latn",
+            },
+        }
+    ]
+    (row,) = build_document_rows(scored=scored, retrieved=[], extracted=[])
+    assert row["text"] == text
+    assert row["text_sha256"] == digest
+
+
+def test_published_text_must_match_recorded_text_sha256() -> None:
+    scored = [
+        {
+            "row_index": 0,
+            "row_id": "row-1",
+            "url": "https://example.org/1.pdf",
+            "text": "original text",
+            "text_sha256": sha256_hex(b"tampered text"),
+            "relevance": {},
+        }
+    ]
+    with pytest.raises(PublicationError, match="text_sha256"):
+        build_document_rows(scored=scored, retrieved=[], extracted=[])
+
+
+def test_total_text_byte_cap_enforced_at_boundary() -> None:
+    text_10_bytes = "0123456789"
+    scored = [
+        {
+            "row_index": 0,
+            "row_id": "row-1",
+            "url": "https://example.org/1.pdf",
+            "text": text_10_bytes,
+            "text_sha256": sha256_hex(text_10_bytes.encode("utf-8")),
+            "relevance": {},
+        }
+    ]
+    # Exactly at boundary: passes
+    rows = build_document_rows(scored=scored, retrieved=[], extracted=[], max_text_bytes=10)
+    assert len(rows) == 1
+
+    # Over boundary by 1 byte: fails
+    with pytest.raises(PublicationError, match="total published text bytes"):
+        build_document_rows(scored=scored, retrieved=[], extracted=[], max_text_bytes=9)
+
+
+def test_build_plan_enforces_max_document_text_bytes() -> None:
+    _, _, manifest = assembled()
+    with pytest.raises(PublicationError, match="total published text bytes"):
+        build_plan(
+            repo="a/b",
+            manifest=manifest,
+            documents=[{"row_id": "r1", "text": "x" * (MAX_DOCUMENT_TEXT_BYTES + 1)}],
+            images=[],
+        )
+
+
+def test_the_card_states_odc_by_attribution_obligation_for_text() -> None:
+    _, _, manifest = assembled()
+    card = render_card(manifest)
+    assert "ODC-BY" in card
+    assert "HuggingFaceFW/finepdfs" in card
+    assert "text" in card.lower()

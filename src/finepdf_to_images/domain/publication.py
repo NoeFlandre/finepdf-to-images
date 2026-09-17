@@ -23,9 +23,13 @@ from finepdf_to_images.domain.scoring import vocabulary_summary
 from finepdf_to_images.domain.serialization import canonical_bytes, content_digest, sha256_hex
 
 #: Bumped when the published row shape changes. Consumers index on these names.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DEFAULT_REPO = "NoeFlandre/finepdf-to-images-poc"
+
+#: Hard ceiling on total published text bytes across all documents.
+#: The 1000-row pilot yields ~24 MB; 50 MB prevents unbounded text payload dumps.
+MAX_DOCUMENT_TEXT_BYTES = 50 * 1024 * 1024
 
 #: ``namespace/name`` as the Hub spells it. The destination is interpolated into API calls and
 #: printed in the card, so it is validated rather than trusted -- the same rule SourceRef applies
@@ -46,6 +50,8 @@ DOCUMENT_FIELDS: tuple[tuple[str, str], ...] = (
     ("url", "source document URL as recorded by FinePDFs"),
     ("final_url", "URL the bytes were actually served from, after any redirect"),
     ("language", "language recorded by FinePDFs for the row"),
+    ("text", "extracted document text from FinePDFs (ODC-BY)"),
+    ("text_sha256", "SHA-256 of the extracted text UTF-8 bytes"),
     ("relevant", "whether the agriculture scorer marked the row relevant"),
     ("relevance_score", "number of distinct concept groups matched"),
     ("matched_terms", "the exact vocabulary terms that produced the decision"),
@@ -143,6 +149,7 @@ def build_document_rows(
     scored: Sequence[Mapping[str, Any]],
     retrieved: Sequence[Mapping[str, Any]],
     extracted: Sequence[Mapping[str, Any]],
+    max_text_bytes: int = MAX_DOCUMENT_TEXT_BYTES,
 ) -> list[dict[str, Any]]:
     """One published row per scored document, in shard order.
 
@@ -161,6 +168,11 @@ def build_document_rows(
         )
         for row in scored
     ]
+    total_text_bytes = sum(len(row["text"].encode("utf-8")) for row in rows)
+    if total_text_bytes > max_text_bytes:
+        raise PublicationError(
+            f"total published text bytes {total_text_bytes} exceeds cap of {max_text_bytes} bytes"
+        )
     return sorted(rows, key=lambda row: (row["row_index"] is None, row["row_index"]))
 
 
@@ -171,12 +183,22 @@ def _document_row(
     relevance = _section(scored, "relevance")
     publication = _section(retrieval, "publication")
     licence = _section(publication, "license")
+    text = _text(scored, "text")
+    actual_sha256 = sha256_hex(text.encode("utf-8"))
+    recorded_sha256 = scored.get("text_sha256")
+    if recorded_sha256 is not None and recorded_sha256 != actual_sha256:
+        raise PublicationError(
+            f"text_sha256 mismatch for row {scored.get('row_id')!r}: "
+            f"recorded {recorded_sha256!r} != computed {actual_sha256!r}"
+        )
     return {
         "row_index": scored.get("row_index"),
         "row_id": scored.get("row_id"),
         "url": scored.get("url"),
         "final_url": _text(retrieval, "final_url"),
         "language": _text(relevance, "language"),
+        "text": text,
+        "text_sha256": actual_sha256,
         "relevant": bool(relevance.get("relevant")),
         "relevance_score": _number(relevance, "score"),
         "matched_terms": list(relevance.get("matched_terms") or ()),
@@ -270,6 +292,29 @@ def _counts(
     }
 
 
+def _validate_repo(repo: str) -> None:
+    if not isinstance(repo, str) or not _REPO_RE.fullmatch(repo):
+        raise PublicationError(f"invalid destination repo {repo!r}: expected namespace/name")
+
+
+def _check_no_byte_publication(documents: Sequence[Mapping[str, Any]]) -> None:
+    cleared = [row["row_id"] for row in documents if row.get("disposition") == "publish-artifact"]
+    if cleared:
+        raise PublicationError(
+            f"{len(cleared)} row(s) are cleared for byte publication, which this stage does not "
+            f"implement yet (first: {cleared[0]!r}). Implement artifact upload before allowing it."
+        )
+
+
+def _check_text_byte_cap(documents: Sequence[Mapping[str, Any]]) -> None:
+    total_text_bytes = sum(len(str(row.get("text") or "").encode("utf-8")) for row in documents)
+    if total_text_bytes > MAX_DOCUMENT_TEXT_BYTES:
+        raise PublicationError(
+            f"total published text bytes {total_text_bytes} exceeds cap of "
+            f"{MAX_DOCUMENT_TEXT_BYTES} bytes"
+        )
+
+
 def build_plan(
     *,
     repo: str,
@@ -278,19 +323,9 @@ def build_plan(
     images: Sequence[Mapping[str, Any]],
 ) -> PublicationPlan:
     """Everything the publication consists of, as bytes, without touching the Hub."""
-    if not isinstance(repo, str) or not _REPO_RE.fullmatch(repo):
-        raise PublicationError(f"invalid destination repo {repo!r}: expected namespace/name")
-
-    # Byte publication is not implemented. If the policy ever clears a document, that is a change
-    # to this stage, not a silent no-op -- and the card must not claim bytes were published when
-    # the plan contains only the index.
-    cleared = [row["row_id"] for row in documents if row.get("disposition") == "publish-artifact"]
-    if cleared:
-        raise PublicationError(
-            f"{len(cleared)} row(s) are cleared for byte publication, which this stage does not "
-            f"implement yet (first: {cleared[0]!r}). Implement artifact upload before allowing it."
-        )
-
+    _validate_repo(repo)
+    _check_no_byte_publication(documents)
+    _check_text_byte_cap(documents)
     card = render_card(manifest)
     files = (
         PublishFile(CARD_FILE, card.encode("utf-8")),

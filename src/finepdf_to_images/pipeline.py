@@ -154,8 +154,9 @@ def run_score(*, records: Sequence[Mapping[str, Any]], out_dir: pathlib.Path) ->
     rows: list[dict[str, Any]] = []
     relevant = 0
     for position, record in enumerate(records):
+        text = _as_text(record.get("text"), "text", position)
         result = score_text(
-            _as_text(record.get("text"), "text", position),
+            text,
             language=_as_text(record.get("language"), "language", position),
         )
         relevant += int(result.relevant)
@@ -164,6 +165,8 @@ def run_score(*, records: Sequence[Mapping[str, Any]], out_dir: pathlib.Path) ->
                 "row_index": record.get("row_index"),
                 "row_id": record.get("row_id"),
                 "url": record.get("url"),
+                "text": text,
+                "text_sha256": sha256_hex(text.encode("utf-8")),
                 "relevance": result.as_dict(),
             }
         )
