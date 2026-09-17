@@ -6,14 +6,20 @@ readme = "README.md"
 requires-python = ">=3.13"
 license = "Apache-2.0"
 authors = [{ name = "Noe Flandre" }]
-# pypdf and pillow are pinned exactly, not floored: their decoding determines the bytes of every
-# published image, and therefore its sha256, its path, and the manifest digest. A minor bump would
-# silently change the dataset.
+# pypdf, pillow and pyarrow are pinned exactly, not floored: their decoding and encoding determine
+# the bytes of every published file, and therefore its digest. A minor bump would silently change
+# the dataset.
+#
+# pyarrow joined them when parquet became the published artifact. Every writer option is pinned in
+# adapters/parquet.py, but the footer's `created_by` carries pyarrow's own version string and
+# cannot be set through the API, so the output is byte-stable only for a given version. Upgrading
+# it rewrites every published parquet and produces a commit that changes no data -- a deliberate
+# republication, not a routine bump.
 dependencies = [
     "httpx>=0.28.1",
     "huggingface-hub>=0.28",
     "pillow==12.3.0",
-    "pyarrow>=25.0.1",
+    "pyarrow==25.0.1",
     "pypdf==6.19.0",
 ]
 
