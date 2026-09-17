@@ -223,6 +223,22 @@ def _cmd_publish(args: argparse.Namespace) -> int:
     return _report_publication(result, applied_requested=args.apply)
 
 
+def _report_removals(removed: Sequence[str], limit: int = 10) -> None:
+    """What the publication would delete.
+
+    A publication removes what it does not contain, so the operator sees the removals before
+    --apply rather than discovering them afterwards. Truncated because the first cleanup of the
+    old layout removes ~200 files and a reviewable dry run is not a wall of paths.
+    """
+    if not removed:
+        return
+    print(f"remove     {len(removed)} published file(s) the plan no longer contains")
+    for path in removed[:limit]:
+        print(f"  {path}")
+    if len(removed) > limit:
+        print(f"  ... and {len(removed) - limit} more")
+
+
 def _report_publication(result: Any, *, applied_requested: bool) -> int:
     counts = result.plan.manifest["counts"]
     print(f"repo       {result.plan.repo}")
@@ -233,6 +249,7 @@ def _report_publication(result: Any, *, applied_requested: bool) -> int:
     for file in result.plan.files:
         print(f"  {file.path:<24} {file.size:>8} bytes  {file.sha256[:16]}...")
     print(f"digest     {result.plan.digest}")
+    _report_removals(result.removed)
 
     if not applied_requested:
         print("\nDRY RUN - nothing was uploaded. Re-run with --apply to publish.")
@@ -241,13 +258,27 @@ def _report_publication(result: Any, *, applied_requested: bool) -> int:
     if result.noop:
         print(f"\nno-op: every file is already published, unchanged, at {result.revision}")
         return EXIT_OK
+    return _report_outcome(result)
+
+
+def _report_outcome(result: Any) -> int:
+    """What the Hub holds after an upload, and whether that is what we sent.
+
+    Split from the reporting above so each function stays inside the complexity gate; the dry-run
+    and no-op paths return before anything has been written, and this covers only the case where
+    a commit actually happened.
+    """
     if not result.ok:
         print(
-            f"\nverification FAILED; missing or mismatched: {list(result.missing)}", file=sys.stderr
+            f"\nverification FAILED; missing or mismatched: {list(result.missing)}; "
+            f"still present after deletion: {list(result.remaining)}",
+            file=sys.stderr,
         )
         return EXIT_FAILURE
     print(f"\npublished at revision {result.revision}")
     print(f"verified   {len(result.verified)} file(s) present with the expected bytes")
+    if result.removed:
+        print(f"removed    {len(result.removed)} stale file(s) in the same commit")
     print(f"           https://huggingface.co/datasets/{result.plan.repo}")
     return EXIT_OK
 

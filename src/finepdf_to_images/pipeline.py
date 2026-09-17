@@ -13,6 +13,7 @@ from typing import Any
 
 from finepdf_to_images.adapters.hub import Hub
 from finepdf_to_images.adapters.images import ImageExtractor, encoder_versions
+from finepdf_to_images.adapters.parquet import encode_dataset
 from finepdf_to_images.adapters.retrieval import Transport, TransportError
 from finepdf_to_images.adapters.source import ShardReader
 from finepdf_to_images.adapters.storage import read_bytes, write_bytes
@@ -28,9 +29,10 @@ from finepdf_to_images.domain.publication import (
     PublicationError,
     PublicationPlan,
     PublishFile,
+    build_dataset_plan,
+    build_dataset_rows,
     build_document_rows,
     build_image_rows,
-    build_plan,
     cleared_image_digests,
     cleared_pdf_digests,
     cleared_row_ids,
@@ -613,10 +615,15 @@ class PublicationResult:
     revision: str
     verified: tuple[str, ...]
     missing: tuple[str, ...]
+    #: Published files the plan no longer contains: removed in the same commit as the writes when
+    #: ``apply`` is set, and merely reported on a dry run.
+    removed: tuple[str, ...] = ()
+    #: Paths that should have been removed and are still served when the Hub is read back.
+    remaining: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
-        return not self.missing
+        return not self.missing and not self.remaining
 
 
 def run_publish(
@@ -661,13 +668,20 @@ def run_publish(
     # deletion list would be derived from two different views of the same repository.
     remote = hub.file_digests(repo)
     noop = is_noop(plan, remote)
+    stale = tuple(stale_paths(plan, remote))
     if not apply:
         return PublicationResult(
-            plan=plan, applied=False, noop=noop, revision="", verified=(), missing=()
+            plan=plan,
+            applied=False,
+            noop=noop,
+            revision="",
+            verified=(),
+            missing=(),
+            removed=stale,
         )
     if noop:
         return _already_published(hub, plan, repo)
-    return _upload_and_verify(hub, plan, repo, manifest, stale_paths(plan, remote))
+    return _upload_and_verify(hub, plan, repo, manifest, stale)
 
 
 def _already_published(hub: Hub, plan: PublicationPlan, repo: str) -> PublicationResult:
@@ -696,6 +710,9 @@ def _upload_and_verify(
     """
     revision = hub.upload(plan, _commit_message(manifest), stale)
     published = hub.file_digests(repo)
+    # Both halves of the commit are verified: a deletion that did not happen leaves the dataset
+    # serving the old shape while the run reports success.
+    remaining = tuple(path for path in stale if path in published)
     missing = _unverified(plan, stale, published)
     return PublicationResult(
         plan=plan,
@@ -704,6 +721,8 @@ def _upload_and_verify(
         revision=revision,
         verified=tuple(file.path for file in plan.files if file.path not in missing),
         missing=missing,
+        removed=tuple(stale),
+        remaining=remaining,
     )
 
 
@@ -755,14 +774,33 @@ def _plan_publication(
         pdf_root=pdf_root,
         image_root=image_root,
     )
-    plan = build_plan(
-        repo=repo,
-        manifest=manifest,
-        documents=document_rows,
-        images=image_rows,
-        artifacts=artifacts,
-    )
+    # The artifacts were read and digest-verified above, so the bytes embedded in a row are the
+    # same bytes, checked the same way, that the old layout published as loose files.
+    embeddable = {
+        digest: artifact.data
+        for digest, artifact in _artifacts_by_digest(artifacts, shipped_images).items()
+    }
+    dataset = encode_dataset(build_dataset_rows(document_rows, images, embeddable))
+    plan = build_dataset_plan(repo=repo, manifest=manifest, dataset=dataset)
     return plan, manifest
+
+
+def _artifacts_by_digest(
+    artifacts: Sequence[PublishFile], shipped_images: Mapping[str, str]
+) -> dict[str, PublishFile]:
+    """The image artifacts, keyed by digest.
+
+    Only images: a PDF is no longer republished as bytes, so its artifact has no column to land
+    in. Keyed off the digest the policy cleared rather than off the path, so a path convention
+    change cannot quietly empty this mapping.
+    """
+    by_path = {artifact.path: artifact for artifact in artifacts}
+    found: dict[str, PublishFile] = {}
+    for digest, mime in shipped_images.items():
+        artifact = by_path.get(image_path(digest, mime))
+        if artifact is not None:
+            found[digest] = artifact
+    return found
 
 
 def _load_artifacts(
