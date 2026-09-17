@@ -97,6 +97,23 @@ attempts to concatenate files with incompatible schemas, and fails with `CastErr
 parquet conversion and the Dataset Viewer). A domain test asserts that the front matter parses
 as valid YAML and explicitly declares both configs with their respective splits and data files.
 
+## The published tree can shrink
+
+A publication is a statement of what the dataset **is**, not a list of files to add. Remote files
+the plan does not contain are deleted in the *same commit* as the writes, so no revision is ever a
+mixture of the old shape and the new one.
+
+Only paths this stage writes are candidates — `data/`, `images/`, `pdfs/`, `README.md`,
+`manifest.json`. A `LICENSE`, a `.gitignore`, or anything a maintainer added through the Hub's web
+UI is left alone, and `.gitattributes` is never touched. See
+[ADR-0014](adr/0014-a-publication-removes-what-it-does-not-contain.md).
+
+One consequence is worth stating on its own: **`--pdf-root` and `--image-root` are required
+whenever the policy cleared a row.** They used to be optional, and omitting one quietly published
+a smaller plan. Once a publication also deletes, that same forgotten flag removes already-published
+bytes from a public dataset. Publishing metadata only is expressed by clearing nothing, not by
+leaving out an argument.
+
 ## Idempotency
 
 Publishing the same pilot output twice is an **exact no-op**: no second commit, and the existing
@@ -109,6 +126,10 @@ what you produced.
 
 After an upload the Hub is read back and each file's digest compared against what was sent. A
 mismatch is reported and the command exits non-zero rather than claiming success.
+
+Verification covers **both halves** of the commit. A stale file that is still being served is as
+much a failed publication as a write that did not land: the dataset would keep serving the old
+shape while the run reported success.
 
 The Hub reports a **git blob id** for an ordinary file and a content SHA-256 only for an LFS
 object, so the comparison accepts either identity. This matters more than it sounds: none of the

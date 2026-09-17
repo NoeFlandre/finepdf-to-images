@@ -608,6 +608,19 @@ def _jsonl(rows: Sequence[Mapping[str, Any]]) -> bytes:
 #: Files the Hub manages itself. Deleting this would fight the Hub over LFS tracking rules.
 HUB_MANAGED_FILES: frozenset[str] = frozenset({".gitattributes"})
 
+#: The only paths a publication may remove: the ones it writes itself.
+#:
+#: Deleting "everything the plan does not name" is the wrong default for a shared repository. A
+#: ``LICENSE``, a ``.gitignore``, an image the card links to, anything a maintainer added through
+#: the Hub's web UI -- none of those are ours to remove, and a publication that quietly deletes
+#: them is worse than one that leaves a stale file behind. An unrecognised path is left alone.
+OWNED_PREFIXES: tuple[str, ...] = ("data/", "images/", "pdfs/")
+OWNED_FILES: frozenset[str] = frozenset({CARD_FILE, MANIFEST_FILE})
+
+
+def _is_ours(path: str) -> bool:
+    return path in OWNED_FILES or path.startswith(OWNED_PREFIXES)
+
 
 def stale_paths(plan: PublicationPlan, remote: Mapping[str, str]) -> list[str]:
     """Remote paths this plan no longer contains, and therefore should stop publishing.
@@ -616,10 +629,12 @@ def stale_paths(plan: PublicationPlan, remote: Mapping[str, str]) -> list[str]:
     Without this the repository only ever grows: the pilot accumulated 190 loose image files, 3
     PDFs and four JSONL files across successive runs, none of which any later plan mentioned.
 
-    Files the Hub manages are excluded -- see :data:`HUB_MANAGED_FILES`.
+    Only paths this stage writes are candidates -- see :data:`OWNED_PREFIXES`. Files the Hub
+    manages are excluded too, belt and braces, since ``.gitattributes`` is not under a prefix we
+    own and would already be spared.
     """
     planned = {file.path for file in plan.files}
-    return sorted(set(remote) - planned - HUB_MANAGED_FILES)
+    return sorted(path for path in set(remote) - planned - HUB_MANAGED_FILES if _is_ours(path))
 
 
 def is_noop(plan: PublicationPlan, remote: Mapping[str, str]) -> bool:

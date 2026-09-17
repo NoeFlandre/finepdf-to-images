@@ -696,7 +696,7 @@ def _upload_and_verify(
     """
     revision = hub.upload(plan, _commit_message(manifest), stale)
     published = hub.file_digests(repo)
-    missing = tuple(file.path for file in plan.files if not file.matches(published.get(file.path)))
+    missing = _unverified(plan, stale, published)
     return PublicationResult(
         plan=plan,
         applied=True,
@@ -705,6 +705,20 @@ def _upload_and_verify(
         verified=tuple(file.path for file in plan.files if file.path not in missing),
         missing=missing,
     )
+
+
+def _unverified(
+    plan: PublicationPlan, stale: Sequence[str], published: Mapping[str, str]
+) -> tuple[str, ...]:
+    """Everything the Hub does not hold as this publication says it should.
+
+    Both halves of the commit, not just the half that adds: a deletion that did not happen is as
+    much a failed publication as a write that did not, because the dataset would keep serving the
+    old shape while the run reported success.
+    """
+    written = [file.path for file in plan.files if not file.matches(published.get(file.path))]
+    still_there = [path for path in stale if path in published]
+    return tuple(written + still_there)
 
 
 def _plan_publication(
@@ -722,7 +736,10 @@ def _plan_publication(
     """Assemble everything a publication would write, without touching the Hub."""
     document_rows = build_document_rows(scored=scored, retrieved=retrieved, extracted=documents)
     cleared = cleared_row_ids(document_rows)
-    shipped_images = cleared_image_digests(images, cleared) if image_root is not None else {}
+    # Not conditioned on ``image_root``: what the policy cleared is a fact about the run, not
+    # about which paths the caller happened to pass. Deriving it from the flag made a forgotten
+    # --image-root look like "nothing was cleared", which silently published a smaller dataset.
+    shipped_images = cleared_image_digests(images, cleared)
     image_rows = build_image_rows(images, shipped_images)
     manifest = build_publication_manifest(
         source=select_manifest["source"],
@@ -761,19 +778,41 @@ def _load_artifacts(
     and the file can disagree -- a truncated write, an edited working copy -- and publishing under
     a digest the bytes do not have would break the one guarantee content addressing offers.
     """
+    pdfs = cleared_pdf_digests(documents)
     artifacts: list[PublishFile] = []
-    for digest, row_id in sorted(cleared_pdf_digests(documents).items()):
-        if pdf_root is None:
-            continue
-        artifacts.append(
-            _artifact(pdf_root / artifact_path(digest), digest, artifact_path(digest), row_id)
-        )
-    for digest, mime in sorted(shipped_images.items()):
-        if image_root is None:
-            continue
-        path = image_path(digest, mime)
-        artifacts.append(_artifact(image_root / path, digest, path, digest))
+
+    if pdfs:
+        root = _required_root(pdf_root, len(pdfs), "--pdf-root", "PDF")
+        for digest, row_id in sorted(pdfs.items()):
+            artifacts.append(
+                _artifact(root / artifact_path(digest), digest, artifact_path(digest), row_id)
+            )
+    if shipped_images:
+        root = _required_root(image_root, len(shipped_images), "--image-root", "image")
+        for digest, mime in sorted(shipped_images.items()):
+            path = image_path(digest, mime)
+            artifacts.append(_artifact(root / path, digest, path, digest))
     return artifacts
+
+
+def _required_root(root: pathlib.Path | None, cleared: int, flag: str, kind: str) -> pathlib.Path:
+    """Refuse to publish a smaller plan because a path was forgotten.
+
+    Omitting a root used to quietly drop those artifacts from the plan. That was survivable while
+    publication could only add files: the bytes simply were not uploaded that run. Now that a
+    publication also deletes what it does not contain, the same forgotten flag would **remove**
+    already-published bytes from a public dataset -- silently, with exit code 0.
+
+    So a missing root is an error whenever the policy cleared anything. Publishing metadata only
+    is still possible; it is expressed by clearing nothing, not by forgetting an argument.
+    """
+    if root is None:
+        raise PublicationError(
+            f"{cleared} {kind}(s) are cleared for publication but {flag} was not given. "
+            f"Pass {flag}, or the publication would drop them from the plan -- and a publication "
+            "deletes what it does not contain."
+        )
+    return root
 
 
 def _artifact(source: pathlib.Path, digest: str, path: str, owner: str) -> PublishFile:

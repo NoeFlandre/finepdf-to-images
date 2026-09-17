@@ -1117,3 +1117,33 @@ def test_a_remote_holding_extra_files_is_not_a_no_op() -> None:
 
     remote["data/left-behind.jsonl"] = "0" * 40
     assert not is_noop(plan, remote)
+
+
+def test_only_paths_this_stage_writes_are_candidates_for_deletion() -> None:
+    """Deleting "everything the plan does not name" is the wrong default for a shared repository."""
+    documents, images, manifest = assembled()
+    plan = build_plan(repo="a/b", manifest=manifest, documents=documents, images=images)
+    remote = {
+        "LICENSE": "x",
+        ".gitignore": "x",
+        "assets/logo.png": "x",
+        ".huggingface/config.yaml": "x",
+        "data/old.jsonl": "x",
+        "images/ab/cd/x.png": "x",
+        "pdfs/ab/cd/x.pdf": "x",
+        "manifest-old.json": "x",
+    }
+    assert stale_paths(plan, remote) == [
+        "data/old.jsonl",
+        "images/ab/cd/x.png",
+        "pdfs/ab/cd/x.pdf",
+    ]
+
+
+def test_an_unowned_remote_file_does_not_block_a_no_op() -> None:
+    """A maintainer's LICENSE must not make every run look like it has work to do."""
+    documents, images, manifest = assembled()
+    plan = build_plan(repo="a/b", manifest=manifest, documents=documents, images=images)
+    remote = {file.path: file.git_blob_sha1 for file in plan.files}
+    remote["LICENSE"] = "x"
+    assert is_noop(plan, remote)

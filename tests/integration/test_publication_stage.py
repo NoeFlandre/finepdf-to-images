@@ -597,10 +597,18 @@ def test_bytes_that_disagree_with_the_index_are_refused(tmp_path: pathlib.Path) 
         _publish_cleared(FakeHub(), run)
 
 
-def test_without_the_roots_no_bytes_are_read_at_all(tmp_path: pathlib.Path) -> None:
-    """Omitting the roots is how a run publishes the index alone. It must not half-publish."""
+def test_omitting_a_root_is_refused_rather_than_silently_publishing_less(
+    tmp_path: pathlib.Path,
+) -> None:
+    """REGRESSION: a forgotten root used to shrink the plan, which now *deletes* published bytes.
+
+    Dropping artifacts from the plan was survivable while publication could only add files -- the
+    bytes just were not uploaded that run. Once a publication also removes what it does not
+    contain, the same forgotten flag deletes already-published bytes from a public dataset, with
+    exit code 0 and no warning.
+    """
     run = _cleared_run(tmp_path, pdf=b"%PDF-1.4 cleared", image=b"\x89PNG\r\n\x1a\npixels")
-    with pytest.raises(PublicationError, match="carries no artifact"):
+    with pytest.raises(PublicationError, match="--pdf-root was not given"):
         run_publish(
             hub=FakeHub(),
             repo="NoeFlandre/finepdf-to-images-poc",
@@ -689,3 +697,60 @@ def test_publishing_twice_with_nothing_stale_is_still_a_no_op() -> None:
     assert second.noop
     assert len(hub.commits) == commits
     assert hub.deleted == []
+
+
+def test_forgetting_only_the_image_root_is_refused(tmp_path: pathlib.Path) -> None:
+    """The dangerous half: with --pdf-root given, the PDFs satisfied every other check.
+
+    `publishes_source_bytes` stayed true, the card/payload agreement passed on the PDFs alone,
+    and every published image became stale and was deleted. Exit code 0.
+    """
+    run = _cleared_run(tmp_path, pdf=b"%PDF-1.4 cleared", image=b"\x89PNG\r\n\x1a\npixels")
+    with pytest.raises(PublicationError, match="--image-root was not given"):
+        run_publish(
+            hub=FakeHub(),
+            repo="NoeFlandre/finepdf-to-images-poc",
+            select_manifest=SELECT_MANIFEST,
+            scored=run["scored"],
+            retrieved=run["retrieved"],
+            documents=run["documents"],
+            images=run["images"],
+            extract_manifest=EXTRACT_MANIFEST,
+            pdf_root=run["pdf_root"],
+        )
+
+
+def test_a_run_that_clears_nothing_needs_no_roots(tmp_path: pathlib.Path) -> None:
+    """Publishing metadata only is expressed by clearing nothing, not by forgetting an argument."""
+    result = publish(FakeHub())
+    assert not result.plan.manifest["publishes_source_bytes"]
+    assert [
+        file.path for file in result.plan.files if file.path.startswith(("pdfs/", "images/"))
+    ] == []
+
+
+def test_a_deletion_that_did_not_happen_is_a_failed_publication() -> None:
+    """Verification used to cover only the writes. A stale file still being served is a failure:
+    the dataset would keep the old shape while the run reported success."""
+
+    class KeepsAFile(FakeHub):
+        def upload(self, plan, message, delete=()):  # type: ignore[no-untyped-def]
+            revision = super().upload(plan, message, ())
+            self.deleted.extend(delete)
+            return revision
+
+    hub = KeepsAFile(files={"data/old.jsonl": b"{}"})
+    result = publish(hub, apply=True)
+
+    assert not result.ok
+    assert "data/old.jsonl" in result.missing
+
+
+def test_a_file_outside_the_paths_we_publish_is_left_alone() -> None:
+    """A LICENSE, a .gitignore, an asset a maintainer added by hand -- none are ours to remove."""
+    hub = FakeHub(files={"LICENSE": b"MIT", "assets/logo.png": b"\x89PNG", "data/old.jsonl": b"{}"})
+    publish(hub, apply=True)
+
+    assert hub.deleted == ["data/old.jsonl"]
+    assert hub.files["LICENSE"] == b"MIT"
+    assert hub.files["assets/logo.png"] == b"\x89PNG"
