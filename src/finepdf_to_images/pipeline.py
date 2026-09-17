@@ -615,10 +615,15 @@ class PublicationResult:
     revision: str
     verified: tuple[str, ...]
     missing: tuple[str, ...]
+    #: Published files the plan no longer contains: removed in the same commit as the writes when
+    #: ``apply`` is set, and merely reported on a dry run.
+    removed: tuple[str, ...] = ()
+    #: Paths that should have been removed and are still served when the Hub is read back.
+    remaining: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
-        return not self.missing
+        return not self.missing and not self.remaining
 
 
 def run_publish(
@@ -663,13 +668,20 @@ def run_publish(
     # deletion list would be derived from two different views of the same repository.
     remote = hub.file_digests(repo)
     noop = is_noop(plan, remote)
+    stale = tuple(stale_paths(plan, remote))
     if not apply:
         return PublicationResult(
-            plan=plan, applied=False, noop=noop, revision="", verified=(), missing=()
+            plan=plan,
+            applied=False,
+            noop=noop,
+            revision="",
+            verified=(),
+            missing=(),
+            removed=stale,
         )
     if noop:
         return _already_published(hub, plan, repo)
-    return _upload_and_verify(hub, plan, repo, manifest, stale_paths(plan, remote))
+    return _upload_and_verify(hub, plan, repo, manifest, stale)
 
 
 def _already_published(hub: Hub, plan: PublicationPlan, repo: str) -> PublicationResult:
@@ -698,6 +710,9 @@ def _upload_and_verify(
     """
     revision = hub.upload(plan, _commit_message(manifest), stale)
     published = hub.file_digests(repo)
+    # Both halves of the commit are verified: a deletion that did not happen leaves the dataset
+    # serving the old shape while the run reports success.
+    remaining = tuple(path for path in stale if path in published)
     missing = _unverified(plan, stale, published)
     return PublicationResult(
         plan=plan,
@@ -706,6 +721,8 @@ def _upload_and_verify(
         revision=revision,
         verified=tuple(file.path for file in plan.files if file.path not in missing),
         missing=missing,
+        removed=tuple(stale),
+        remaining=remaining,
     )
 
 
