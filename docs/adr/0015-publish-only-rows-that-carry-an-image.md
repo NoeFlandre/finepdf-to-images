@@ -23,8 +23,9 @@ here rather than left implicit in a diff, because it reverses the posture of ADR
 
 ## Consequences
 
-- The pilot publishes 10 rows instead of 52, and 259 images instead of 190 — from 10 sources
-  instead of 1.
+- The pilot publishes 10 rows instead of 52, and 250 images instead of 190 — from 10 sources
+  instead of 1. (250, not 259: the run extracted 269 image references, which deduplicate to 250
+  distinct images, since the same picture can appear on several pages.)
 - **Nine of those ten sources declared no licence.** They include commercial publishers, an
   academic journal and a university extension service. Their copyright remains with them; this
   dataset reproduces their images without permission, as a research proof of concept.
