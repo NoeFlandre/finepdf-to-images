@@ -22,6 +22,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from finepdf_to_images import __version__
+from finepdf_to_images.adapters.hub import HuggingFaceHub
 from finepdf_to_images.adapters.images import PypdfImageExtractor
 from finepdf_to_images.adapters.retrieval import HttpxTransport
 from finepdf_to_images.adapters.source import (
@@ -30,6 +31,7 @@ from finepdf_to_images.adapters.source import (
     ShardReader,
 )
 from finepdf_to_images.adapters.storage import read_bytes, read_jsonl
+from finepdf_to_images.domain.publication import DEFAULT_REPO, PublicationError
 from finepdf_to_images.domain.retrieval import RetrievalLimits
 from finepdf_to_images.domain.source import (
     DEFAULT_CONFIG,
@@ -42,7 +44,7 @@ from finepdf_to_images.domain.source import (
     SourceConfigurationError,
     SourceRef,
 )
-from finepdf_to_images.pipeline import run_extract, run_retrieve, run_score, run_select
+from finepdf_to_images.pipeline import run_extract, run_publish, run_retrieve, run_score, run_select
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
@@ -125,6 +127,14 @@ def _cmd_retrieve(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _stage_manifest(path: pathlib.Path, stage: str) -> Mapping[str, Any]:
+    """Read a stage manifest, refusing one from a different stage."""
+    manifest = json.loads(read_bytes(path))
+    if not isinstance(manifest, dict) or manifest.get("stage") != stage:
+        raise ValueError(f"{path} is not a {stage} manifest")
+    return manifest
+
+
 def _source_from(path: pathlib.Path) -> Mapping[str, Any]:
     """Read the select manifest's source block, refusing anything that is not one.
 
@@ -166,6 +176,58 @@ def _cmd_extract(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+#: Substituted by the CLI tests so publication can be exercised against a fake Hub. The real one
+#: is never constructed in a test, so no test can reach the network or a credential.
+HUB_FACTORY: Callable[[], Any] = HuggingFaceHub
+
+
+def _cmd_publish(args: argparse.Namespace) -> int:
+    result = run_publish(
+        hub=HUB_FACTORY(),
+        repo=args.repo,
+        select_manifest=_stage_manifest(pathlib.Path(args.select_manifest), "select"),
+        scored=read_jsonl(pathlib.Path(args.scored)),
+        retrieved=read_jsonl(pathlib.Path(args.retrieved)),
+        documents=read_jsonl(pathlib.Path(args.documents)),
+        images=read_jsonl(pathlib.Path(args.images)),
+        extract_manifest=_stage_manifest(pathlib.Path(args.extract_manifest), "extract")
+        if args.extract_manifest
+        else None,
+        apply=args.apply,
+        out_dir=pathlib.Path(args.out) if args.out else None,
+    )
+    return _report_publication(result, applied_requested=args.apply)
+
+
+def _report_publication(result: Any, *, applied_requested: bool) -> int:
+    counts = result.plan.manifest["counts"]
+    print(f"repo       {result.plan.repo}")
+    print(f"documents  {counts['documents']} ({counts['relevant']} relevant)")
+    print(f"retrieved  {counts['retrieved']}")
+    print(f"images     {counts['images']} ({counts['unique_images']} unique)")
+    print("files")
+    for file in result.plan.files:
+        print(f"  {file.path:<24} {file.size:>8} bytes  {file.sha256[:16]}...")
+    print(f"digest     {result.plan.digest}")
+
+    if not applied_requested:
+        print("\nDRY RUN - nothing was uploaded. Re-run with --apply to publish.")
+        print("already published and identical" if result.noop else "would publish the files above")
+        return EXIT_OK
+    if result.noop:
+        print(f"\nno-op: every file is already published, unchanged, at {result.revision}")
+        return EXIT_OK
+    if not result.ok:
+        print(
+            f"\nverification FAILED; missing or mismatched: {list(result.missing)}", file=sys.stderr
+        )
+        return EXIT_FAILURE
+    print(f"\npublished at revision {result.revision}")
+    print(f"verified   {len(result.verified)} file(s) present with the expected bytes")
+    print(f"           https://huggingface.co/datasets/{result.plan.repo}")
+    return EXIT_OK
+
+
 #: Subcommand dispatch. ``argparse`` guarantees the key exists before we look it up, so there is
 #: no unreachable fallback branch to carry.
 COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
@@ -174,6 +236,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], int]] = {
     "score": _cmd_score,
     "retrieve": _cmd_retrieve,
     "extract": _cmd_extract,
+    "publish": _cmd_publish,
 }
 
 
@@ -268,6 +331,33 @@ def _add_extract_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--out", required=True, help="output directory")
 
 
+def _add_publish_parser(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser(
+        "publish",
+        help="publish the bounded pilot result to a Hugging Face dataset",
+        description=(
+            "Assemble the published rows, manifest and dataset card from the pilot output and "
+            "upload them in one commit. Without --apply this is a dry run that reports the exact "
+            "files and counts and never touches the Hub. Publishing the same pilot output twice "
+            "is a no-op. The card is generated from the policy and vocabulary in code, so it "
+            "cannot drift from the rules it describes."
+        ),
+    )
+    parser.add_argument("--select-manifest", required=True, help="manifest.json from `select`")
+    parser.add_argument("--scored", required=True, help="scored.jsonl from `score`")
+    parser.add_argument("--retrieved", required=True, help="retrieved.jsonl from `retrieve`")
+    parser.add_argument("--documents", required=True, help="documents.jsonl from `extract`")
+    parser.add_argument("--images", required=True, help="images.jsonl from `extract`")
+    parser.add_argument("--extract-manifest", default=None, help="manifest.json from `extract`")
+    parser.add_argument("--repo", default=DEFAULT_REPO, help="destination dataset repository")
+    parser.add_argument("--out", default=None, help="also write the planned files here for review")
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="actually upload. Without this nothing on the Hub is touched.",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser. Kept separate so documentation can render ``--help``."""
     parser = argparse.ArgumentParser(
@@ -284,6 +374,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_score_parser(subparsers)
     _add_retrieve_parser(subparsers)
     _add_extract_parser(subparsers)
+    _add_publish_parser(subparsers)
     return parser
 
 
@@ -298,7 +389,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     try:
         code = COMMANDS[args.command](args)
-    except SourceConfigurationError as error:
+    except (SourceConfigurationError, PublicationError) as error:
         # A bad or unsafe input reference is a usage error, not a crash, and must never be
         # answered by widening the read.
         print(f"{PROG}: {error}", file=sys.stderr)
