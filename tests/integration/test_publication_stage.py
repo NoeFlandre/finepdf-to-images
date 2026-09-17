@@ -1053,3 +1053,84 @@ def test_the_refusal_names_which_file_is_wrong() -> None:
     message = str(caught.value)
     assert "--images" in message
     assert "stale, truncated, or from another run" in message
+
+
+# ------------------------------------------------- properties ported from the removed build_plan
+
+
+def _card(hub: FakeHub) -> str:
+    return hub.files[CARD_FILE].decode()
+
+
+def test_the_card_front_matter_is_valid_yaml() -> None:
+    """Ported from the removed render_card tests.
+
+    The front matter is a machine-read contract, not prose: the Hub parses it to decide how to
+    load the dataset, and invalid YAML fails the viewer outright rather than degrading.
+    """
+    import yaml
+
+    hub = FakeHub()
+    publish(hub, apply=True)
+    front = yaml.safe_load(_card(hub).split("---")[1])
+    assert front["configs"][0]["config_name"] == "default"
+    assert front["configs"][0]["data_files"][0]["path"] == DATASET_FILE
+
+
+def test_the_card_declares_the_image_column_as_a_scalar_image() -> None:
+    """Ported. Without a declared image dtype the viewer shows a struct instead of a picture.
+
+    Scalar rather than a sequence since #38: a list of images renders as JSON.
+    """
+    import yaml
+
+    hub = FakeHub()
+    publish(hub, apply=True)
+    features = yaml.safe_load(_card(hub).split("---")[1])["dataset_info"]["features"]
+    typed = {entry["name"]: entry for entry in features}
+    assert typed["image"]["dtype"] == "image"
+    assert "sequence" not in typed["image"]
+    assert set(typed) == {"pdf_url", "image", "text", "matched_terms"}
+
+
+def test_the_card_is_deterministic() -> None:
+    """Ported. A card that varies between runs breaks the no-op guarantee."""
+    first, second = FakeHub(), FakeHub()
+    publish(first, apply=True)
+    publish(second, apply=True)
+    assert _card(first) == _card(second)
+
+
+def test_the_card_states_the_odc_by_attribution_obligation() -> None:
+    """Ported. Attribution to the upstream dataset is an obligation, not decoration."""
+    hub = FakeHub()
+    publish(hub, apply=True)
+    card = _card(hub)
+    assert "ODC-BY" in card
+    assert "HuggingFaceFW/finepdfs" in card
+
+
+def test_a_plan_is_byte_identical_for_the_same_inputs() -> None:
+    """Ported. This is what makes a second --apply an exact no-op."""
+    first, second = FakeHub(), FakeHub()
+    a = publish(first, apply=True)
+    b = publish(second, apply=True)
+    assert a.plan.digest == b.plan.digest
+    assert [f.sha256 for f in a.plan.files] == [f.sha256 for f in b.plan.files]
+
+
+@pytest.mark.parametrize("repo", ["", "no-slash", "a/b/c", "/b", "a/"])
+def test_an_invalid_destination_is_refused(repo: str) -> None:
+    """Ported. The destination is interpolated into API calls, so it is validated not trusted."""
+    with pytest.raises(PublicationError):
+        run_publish(
+            hub=FakeHub(),
+            repo=repo,
+            select_manifest=SELECT_MANIFEST,
+            scored=[scored_row(0, relevant=True)],
+            retrieved=[retrieved_row(0)],
+            documents=[document_row(0)],
+            images=[image_row(0)],
+            extract_manifest=EXTRACT_MANIFEST,
+            image_root=_fixture_image_root(),
+        )
