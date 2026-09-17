@@ -17,12 +17,16 @@ baseline -> Ruff -> ty -> tests -> property tests -> acceptance tests
 | 6 | Acceptance scenarios | `uv run pytest -m acceptance` | yes |
 | 7 | Architecture checks | `uv run pytest -m architecture` | yes |
 | 8 | CRAP | `uv run python scripts/crap.py` | yes |
-| 9 | Mutation tests | `uv run mutmut run` | **no — advisory** |
+| 9 | Mutation tests | `uv run mutmut run` | **no — advisory** (but its own failure is visible) |
 | 10 | Smoke (CLI + Docker) | `bash scripts/smoke.sh` | yes |
 | 11 | Diff review | a human, and an independent agent | by convention |
 
 `main` is protected: the gate jobs are required status checks, branches must be up to date, history
 stays linear, and force pushes and deletion are refused.
+
+The ordering is **enforced, not merely described**: gates 1–8 run in one job, and the smoke and
+mutation jobs declare `needs: quality`, so they cannot start until the earlier gates pass. Without
+that the jobs run concurrently and the "gauntlet" is a list rather than a sequence.
 
 ## What each gate is for
 
@@ -102,7 +106,18 @@ needs to act.
 ### Smoke
 
 `scripts/smoke.sh` runs the real CLI end to end over the committed fixtures, offline, plus the
-Docker image in CI.
+Docker image in CI. Every stage is asserted on its **counts**, not on "a manifest exists":
+
+- `score` must find relevant rows, or the later stages would be vacuous.
+- `retrieve`, offline, must fail every attempt **with a recorded reason** — the reason histogram
+  is checked to sum to the attempt count.
+- `extract` runs over the committed fixture PDFs and must decode **2 images from 3 documents**,
+  with one zero-image success and one recorded failure, and must write the artifacts.
+- `select`, `score` and `extract` outputs are compared byte-for-byte across two runs.
+
+An earlier version ran `extract` over an empty retrieval, so the stage never opened a PDF. It
+could not have caught the pypdf `DependencyError` this gate is credited with catching — a gate that
+cannot fail is not a gate.
 
 This gate has earned its place twice. Two bugs reached the repository past a fully green suite and
 were caught only on the real path:

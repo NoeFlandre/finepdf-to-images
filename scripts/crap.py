@@ -51,7 +51,11 @@ class Score:
 
 
 def line_hits(xml_path: pathlib.Path) -> dict[str, dict[int, int]]:
-    """``{source file: {line number: hit count}}`` from a coverage XML report."""
+    """``{source file: {line number: hit count}}`` from a coverage XML report.
+
+    Refuses an empty report. With no entries every function scores 100% covered and the gate
+    passes on nothing at all -- a green light bought by a missing file.
+    """
     if not xml_path.is_file():
         raise SystemExit(f"{xml_path} not found. Run: uv run pytest --cov --cov-report=xml")
     tree = ElementTree.parse(xml_path)
@@ -62,6 +66,11 @@ def line_hits(xml_path: pathlib.Path) -> dict[str, dict[int, int]]:
         for line in class_element.iter("line"):
             number = int(line.get("number", "0"))
             per_file[number] = int(line.get("hits", "0"))
+    if not hits:
+        raise SystemExit(
+            f"{xml_path} contains no coverage data. Every function would score 100% covered, "
+            "so this gate would pass without measuring anything."
+        )
     return hits
 
 
@@ -83,8 +92,7 @@ def functions(path: pathlib.Path) -> list[tuple[str, int, int, int]]:
 def scores(root: pathlib.Path, hits: dict[str, dict[int, int]]) -> list[Score]:
     results: list[Score] = []
     for path in sorted(root.rglob("*.py")):
-        key = _matching_key(path, hits)
-        per_file = hits.get(key, {})
+        per_file = hits[_matching_key(path, hits, root)]
         for name, start, end, complexity in functions(path):
             executable = {line: count for line, count in per_file.items() if start <= line <= end}
             results.append(
@@ -100,13 +108,26 @@ def scores(root: pathlib.Path, hits: dict[str, dict[int, int]]) -> list[Score]:
     return results
 
 
-def _matching_key(path: pathlib.Path, hits: dict[str, dict[int, int]]) -> str:
-    """Coverage records paths relative to its own source root; match on the tail."""
-    wanted = path.as_posix()
+def _matching_key(path: pathlib.Path, hits: dict[str, dict[int, int]], root: pathlib.Path) -> str:
+    """The coverage entry for ``path``, matched on its path *relative to the source root*.
+
+    Coverage records names relative to its own configured source, so an exact relative match is
+    the only unambiguous one. A loose "either is a suffix of the other" test silently attributed
+    ``domain/cli.py`` to the top-level ``cli.py`` entry -- wrong coverage, wrong CRAP, no warning.
+
+    A source file with no entry is a hard error rather than a free 100%: it means the report does
+    not describe the code being measured.
+    """
+    relative = path.relative_to(root).as_posix()
     for key in hits:
-        if wanted.endswith(key) or key.endswith(wanted):
+        if pathlib.PurePosixPath(key).as_posix().endswith(relative) and (
+            key == relative or key.endswith(f"/{relative}")
+        ):
             return key
-    return wanted
+    raise SystemExit(
+        f"{path} has no entry in the coverage report (looked for {relative!r}). "
+        "The report is stale or was produced from a different tree; re-run pytest --cov."
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -75,6 +75,9 @@ jobs:
   smoke:
     name: Smoke (real CLI + Docker)
     runs-on: ubuntu-latest
+    # Gate 10 runs after gates 1-8, so the documented ordering is enforced rather than merely
+    # described. Without this the jobs are concurrent and the "gauntlet" is a list, not a sequence.
+    needs: quality
     steps:
       - uses: actions/checkout@v5
       - name: Install uv
@@ -116,6 +119,7 @@ jobs:
   mutation:
     name: Mutation tests (advisory)
     runs-on: ubuntu-latest
+    needs: quality
     # Deliberately not a merge gate. Mutation testing takes minutes, and a kill rate is a
     # conversation rather than a pass/fail line: the honest response to a surviving mutant is
     # sometimes a new test and sometimes "that mutant is equivalent". Blocking on a percentage
@@ -130,7 +134,17 @@ jobs:
           enable-cache: true
       - name: Sync
         run: uv sync --locked --all-groups
+      # No `|| true`: continue-on-error already keeps this off the merge path, and swallowing the
+      # exit code as well would make a crashed mutmut indistinguishable from a clean advisory run.
       - name: Mutate the domain
-        run: uv run mutmut run --max-children 4 || true
+        run: uv run mutmut run --max-children 4
       - name: Surviving mutants
-        run: uv run mutmut results || true
+        if: always()
+        run: uv run mutmut results | tee mutants.txt
+      - name: Upload surviving mutants
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surviving-mutants
+          path: mutants.txt
+          if-no-files-found: ignore

@@ -491,26 +491,16 @@ def _extract_one(
     image data into every manifest row -- and re-extracting per image would re-parse the whole
     document once per picture.
     """
-    row_index, row_id, _url = _identity_of(record)
     pdf_sha256 = str(record.get("sha256") or "")
 
     try:
+        # Inside the try: `int(...)` on a non-numeric row index raises, and hoisting this out let
+        # that escape run_extract and lose every document already extracted. The comment below has
+        # claimed otherwise since before it was true.
+        row_index, row_id, _url = _identity_of(record)
         pdf_bytes = _pdf_bytes_for(record, pdf_root)
         extracted = extractor.extract(pdf_bytes)
-        records = [
-            build_image_record(
-                document_row_id=row_id,
-                document_row_index=row_index,
-                pdf_sha256=pdf_sha256,
-                page_index=image.page_index,
-                image_index=image.image_index,
-                data=image.data,
-                mime=image.mime,
-                width=image.width,
-                height=image.height,
-            )
-            for image in extracted
-        ]
+        records = [_image_record(i, row_id, row_index, pdf_sha256) for i in extracted]
     except Exception as error:
         # Deliberately one handler. A malformed document, a missing file, a non-string path, a
         # non-numeric row index, or a third-party extractor raising something of its own are all

@@ -38,5 +38,7 @@ Mutation testing covers the pure domain only.
   repository past a green suite and were caught there — a malformed `httpx.Timeout` and a pypdf
   `DependencyError` that aborted a whole run. A fixture suite cannot fail in ways its fixtures
   cannot express, which is the argument for keeping this gate even though it is slow and noisy.
+- The smoke and mutation jobs declare `needs: quality`, so the documented ordering is enforced by
+  the workflow rather than implied by a list in the docs.
 - Running everything takes minutes rather than seconds. For a repository this size that is
   affordable; if it stops being affordable, the answer is to make the gates faster, not fewer.
