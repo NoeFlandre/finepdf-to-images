@@ -18,3 +18,4 @@ us, including what it makes harder).
 - [ADR-0010 — Declare explicit dataset configs in the card front matter](0010-dataset-viewer-configs.md)
 - [ADR-0011 — Publish extracted document text under ODC-BY](0011-publish-extracted-text.md)
 - [ADR-0012 — Derived relevant and retrieved splits for documents](0012-relevant-retrieved-splits.md)
+- [ADR-0013 — Publish artifact bytes for allow-listed sources](0013-publish-allow-listed-artifact-bytes.md)

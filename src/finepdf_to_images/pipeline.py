@@ -16,18 +16,24 @@ from finepdf_to_images.adapters.images import ImageExtractor, encoder_versions
 from finepdf_to_images.adapters.retrieval import Transport, TransportError
 from finepdf_to_images.adapters.source import ShardReader
 from finepdf_to_images.adapters.storage import read_bytes, write_bytes
-from finepdf_to_images.domain import policy
+from finepdf_to_images.domain import allowlist, policy
 from finepdf_to_images.domain.images import (
     ImageExtractionError,
     ImageRecord,
     build_image_record,
+    image_path,
     sort_key,
 )
 from finepdf_to_images.domain.publication import (
+    PublicationError,
     PublicationPlan,
+    PublishFile,
     build_document_rows,
     build_image_rows,
     build_plan,
+    cleared_image_digests,
+    cleared_pdf_digests,
+    cleared_row_ids,
     is_noop,
 )
 from finepdf_to_images.domain.publication import build_manifest as build_publication_manifest
@@ -299,7 +305,9 @@ def run_retrieve(
         retrieved += _store(record, body, seen, entry, out_dir)
 
         entry["publication"] = policy.decide(
-            _provenance_for(record, source), require_artifact_hash=record.ok
+            _provenance_for(record, source),
+            allowlist.declaration_for(record.url, record.final_url),
+            require_artifact_hash=record.ok,
         ).as_dict()
         records.append(entry)
 
@@ -622,6 +630,8 @@ def run_publish(
     extract_manifest: Mapping[str, Any] | None = None,
     apply: bool = False,
     out_dir: pathlib.Path | None = None,
+    pdf_root: pathlib.Path | None = None,
+    image_root: pathlib.Path | None = None,
 ) -> PublicationResult:
     """Plan a publication, and carry it out only when ``apply`` is true.
 
@@ -637,6 +647,8 @@ def run_publish(
         documents=documents,
         images=images,
         extract_manifest=extract_manifest,
+        pdf_root=pdf_root,
+        image_root=image_root,
     )
     if out_dir is not None:
         # A local copy of exactly what would be uploaded, so a reviewer can read the card and the
@@ -692,10 +704,14 @@ def _plan_publication(
     documents: Sequence[Mapping[str, Any]],
     images: Sequence[Mapping[str, Any]],
     extract_manifest: Mapping[str, Any] | None,
+    pdf_root: pathlib.Path | None = None,
+    image_root: pathlib.Path | None = None,
 ) -> tuple[PublicationPlan, dict[str, Any]]:
     """Assemble everything a publication would write, without touching the Hub."""
     document_rows = build_document_rows(scored=scored, retrieved=retrieved, extracted=documents)
-    image_rows = build_image_rows(images)
+    cleared = cleared_row_ids(document_rows)
+    shipped_images = cleared_image_digests(images, cleared) if image_root is not None else {}
+    image_rows = build_image_rows(images, shipped_images)
     manifest = build_publication_manifest(
         source=select_manifest["source"],
         sampling=select_manifest["sampling"],
@@ -704,8 +720,59 @@ def _plan_publication(
         vocabulary_version=vocabulary_summary()["version"],
         encoder=(extract_manifest or {}).get("encoder"),
     )
-    plan = build_plan(repo=repo, manifest=manifest, documents=document_rows, images=image_rows)
+    artifacts = _load_artifacts(
+        documents=document_rows,
+        shipped_images=shipped_images,
+        pdf_root=pdf_root,
+        image_root=image_root,
+    )
+    plan = build_plan(
+        repo=repo,
+        manifest=manifest,
+        documents=document_rows,
+        images=image_rows,
+        artifacts=artifacts,
+    )
     return plan, manifest
+
+
+def _load_artifacts(
+    *,
+    documents: Sequence[Mapping[str, Any]],
+    shipped_images: Mapping[str, str],
+    pdf_root: pathlib.Path | None,
+    image_root: pathlib.Path | None,
+) -> list[PublishFile]:
+    """Read the bytes for every cleared artifact, verifying each against its own digest.
+
+    The digest is re-computed from the bytes on disk rather than trusted from the index. The index
+    and the file can disagree -- a truncated write, an edited working copy -- and publishing under
+    a digest the bytes do not have would break the one guarantee content addressing offers.
+    """
+    artifacts: list[PublishFile] = []
+    for digest, row_id in sorted(cleared_pdf_digests(documents).items()):
+        if pdf_root is None:
+            continue
+        artifacts.append(
+            _artifact(pdf_root / artifact_path(digest), digest, artifact_path(digest), row_id)
+        )
+    for digest, mime in sorted(shipped_images.items()):
+        if image_root is None:
+            continue
+        path = image_path(digest, mime)
+        artifacts.append(_artifact(image_root / path, digest, path, digest))
+    return artifacts
+
+
+def _artifact(source: pathlib.Path, digest: str, path: str, owner: str) -> PublishFile:
+    data = source.read_bytes()
+    actual = sha256_hex(data)
+    if actual != digest:
+        raise PublicationError(
+            f"artifact for {owner} is {actual} on disk but indexed as {digest}: refusing to "
+            f"publish bytes under a digest they do not have ({source})"
+        )
+    return PublishFile(path, data)
 
 
 def _commit_message(manifest: Mapping[str, Any]) -> str:

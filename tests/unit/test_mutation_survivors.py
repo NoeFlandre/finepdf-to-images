@@ -345,6 +345,7 @@ def test_every_published_image_field_carries_the_extracted_value() -> None:
         "height": 34,
         "byte_size": 56,
         "duplicate_of": "a" * 64 + "#0.0",
+        "image": None,
     }
 
 
@@ -422,6 +423,7 @@ def test_every_published_document_field_carries_its_stage_value() -> None:
         "pdf_sha256": "c" * 64,
         "pdf_bytes": 2048,
         "image_count": 3,
+        "pdf": None,
         "disposition": "metadata-only",
         "license_status": "unknown",
     }

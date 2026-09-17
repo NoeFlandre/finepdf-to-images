@@ -58,9 +58,28 @@ publishes**. The derived splits republish the same rows, so a document that is r
 retrieved carries its text three times; measuring only the `all` set would under-count the
 publication by that factor — the pilot uploads 30.1 MB of text where such a count reports 24.7 MB.
 
-**No source PDF or image bytes are uploaded.** The policy ships no curated allow-list entries, so
-every artifact resolves to `metadata-only`: hashes and provenance, not the documents. The manifest
-records this as `publishes_source_bytes: false` and the card says it in its second paragraph.
+**Source bytes are uploaded only for allow-listed sources.** The default is still
+`metadata-only` — hashes and provenance, not the document — and it applies to the overwhelming
+majority of rows. Bytes ship only when the curated allow list in `domain/allowlist.py` clears the
+row, which requires a human decision recorded in this repository citing the instrument that makes
+the work free to redistribute. See [ADR-0013](adr/0013-publish-allow-listed-artifact-bytes.md).
+
+Three checks stand between a cleared row and an upload, and they are deliberately stricter than
+"the caller passed it in":
+
+- the artifact's path must be the content-addressed path for the bytes actually passed, so an
+  artifact cannot be filed under another's digest and a published file is self-verifying;
+- its digest must belong to a row the policy cleared — swapping the bytes under a cleared path
+  does not inherit that path's clearance;
+- the total is capped by `MAX_ARTIFACT_BYTES` (64 MB), so a mistake in the allow list cannot become
+  an unbounded redistribution.
+
+A fourth check runs in both directions: a manifest claiming `publishes_source_bytes` with no
+artifact in the plan is refused, and so is a plan carrying artifacts under a manifest that claims
+none. The card's claim and the payload cannot disagree.
+
+Rows that were not cleared keep `image: null` and `pdf: null` rather than disappearing — the
+dataset should say what it declined to publish.
 
 ## The card is generated
 
