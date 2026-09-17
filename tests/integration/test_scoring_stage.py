@@ -9,6 +9,7 @@ import pytest
 from finepdf_to_images.adapters.source import LocalShardReader
 from finepdf_to_images.adapters.storage import read_jsonl
 from finepdf_to_images.cli import EXIT_FAILURE, EXIT_OK, EXIT_USAGE, main
+from finepdf_to_images.domain.serialization import sha256_hex
 from finepdf_to_images.domain.source import SamplingSpec, SourceRef
 from finepdf_to_images.pipeline import run_score, run_select
 
@@ -213,3 +214,16 @@ def test_cli_score_reports_a_missing_records_file_as_a_failure(
     code = run_cli(["score", "--records", str(tmp_path / "nope.jsonl"), "--out", str(tmp_path)])
     assert code == EXIT_FAILURE
     assert "no such file" in capsys.readouterr().err
+
+
+def test_scored_rows_carry_text_and_matching_text_sha256(
+    selected: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    result = run_score(records=read_jsonl(selected), out_dir=tmp_path / "score")
+    rows = read_jsonl(result.scored_path)
+    assert len(rows) == 20
+    for row in rows:
+        assert "text" in row
+        assert "text_sha256" in row
+        assert isinstance(row["text"], str)
+        assert sha256_hex(row["text"].encode("utf-8")) == row["text_sha256"]

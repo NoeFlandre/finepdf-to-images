@@ -37,6 +37,13 @@ decides to publish it.
 URL was refused, or whose server returned HTML, carries its `failure_reason`. A dataset that
 silently drops its failures cannot be used to reproduce the run or to argue with the scorer.
 
+**Extracted document text and `text_sha256` are published under ODC-BY.** Unlike third-party PDF
+and image binaries, the extracted text is part of FinePDFs itself (licensed ODC-BY). Publishing `text`
+makes the relevance score and `matched_terms` auditable without re-downloading the source shard.
+The published `text_sha256` is verified against the UTF-8 text digest at publication time so that
+the published text cannot drift from what was scored. Total published text bytes are strictly bounded
+in the domain by `MAX_DOCUMENT_TEXT_BYTES` (50 MB cap).
+
 **No source PDF or image bytes are uploaded.** The policy ships no curated allow-list entries, so
 every artifact resolves to `metadata-only`: hashes and provenance, not the documents. The manifest
 records this as `publishes_source_bytes: false` and the card says it in its second paragraph.
