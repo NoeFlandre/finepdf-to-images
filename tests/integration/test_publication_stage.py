@@ -144,8 +144,8 @@ def test_a_failed_verification_is_reported_not_swallowed() -> None:
     """If the Hub does not hold what we sent, the run must say so."""
 
     class LosesAFile(FakeHub):
-        def upload(self, plan, message):  # type: ignore[no-untyped-def]
-            revision = super().upload(plan, message)
+        def upload(self, plan, message, delete=()):  # type: ignore[no-untyped-def]
+            revision = super().upload(plan, message, delete)
             self.files.pop(DOCUMENTS_FILE, None)
             return revision
 
@@ -373,8 +373,8 @@ def test_cli_reports_a_failed_verification_as_a_failure(
     from finepdf_to_images import cli
 
     class LosesAFile(FakeHub):
-        def upload(self, plan, message):  # type: ignore[no-untyped-def]
-            revision = super().upload(plan, message)
+        def upload(self, plan, message, delete=()):  # type: ignore[no-untyped-def]
+            revision = super().upload(plan, message, delete)
             self.files.pop(DOCUMENTS_FILE, None)
             return revision
 
@@ -628,3 +628,64 @@ def test_publishing_cleared_bytes_twice_is_still_a_no_op(tmp_path: pathlib.Path)
     second = _publish_cleared(hub, run, apply=True)
     assert second.noop
     assert len(hub.commits) == commits, "artifacts must not re-upload on every run"
+
+
+# --------------------------------------------------------------------------- cleanup
+
+
+def test_stale_remote_files_are_deleted_when_publishing() -> None:
+    """The repository accumulated 203 files no plan mentioned, because upload could only add."""
+    hub = FakeHub(files={"data/old.jsonl": b"{}", "images/ab/cd/x.png": b"\x89PNG"})
+    result = publish(hub, apply=True)
+
+    assert result.applied
+    assert sorted(hub.deleted) == ["data/old.jsonl", "images/ab/cd/x.png"]
+    assert "data/old.jsonl" not in hub.files
+    assert "images/ab/cd/x.png" not in hub.files
+
+
+def test_the_cleanup_happens_in_the_same_commit_as_the_writes() -> None:
+    """Two commits would leave a revision that is neither the old dataset nor the new one."""
+    hub = FakeHub(files={"data/old.jsonl": b"{}"})
+    publish(hub, apply=True)
+    assert len(hub.commits) == 1
+
+
+def test_gitattributes_is_never_deleted() -> None:
+    hub = FakeHub(files={".gitattributes": b"* text=auto"})
+    publish(hub, apply=True)
+    assert hub.deleted == []
+    assert ".gitattributes" in hub.files
+
+
+def test_a_dry_run_deletes_nothing() -> None:
+    """Deletion must not become the one operation that escapes the dry run."""
+    hub = FakeHub(files={"data/old.jsonl": b"{}"})
+    result = publish(hub)
+
+    assert not result.applied
+    assert hub.deleted == []
+    assert hub.files == {"data/old.jsonl": b"{}"}
+    assert not hub.wrote
+
+
+def test_a_remote_with_stale_files_is_not_reported_as_already_published() -> None:
+    hub = FakeHub()
+    publish(hub, apply=True)
+    hub.files["data/left-behind.jsonl"] = b"{}"
+
+    second = publish(hub, apply=True)
+    assert not second.noop, "a cleanup must not be mistaken for a no-op"
+    assert second.applied
+    assert "data/left-behind.jsonl" not in hub.files
+
+
+def test_publishing_twice_with_nothing_stale_is_still_a_no_op() -> None:
+    hub = FakeHub()
+    publish(hub, apply=True)
+    commits = len(hub.commits)
+    second = publish(hub, apply=True)
+
+    assert second.noop
+    assert len(hub.commits) == commits
+    assert hub.deleted == []

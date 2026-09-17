@@ -18,6 +18,7 @@ from finepdf_to_images.domain.publication import (
     DOCUMENTS_FILE,
     DOCUMENTS_RELEVANT_FILE,
     DOCUMENTS_RETRIEVED_FILE,
+    HUB_MANAGED_FILES,
     IMAGE_FIELDS,
     IMAGES_FILE,
     MANIFEST_FILE,
@@ -38,6 +39,7 @@ from finepdf_to_images.domain.publication import (
     derive_retrieved_rows,
     is_noop,
     render_card,
+    stale_paths,
 )
 from finepdf_to_images.domain.retrieval import artifact_path
 from finepdf_to_images.domain.serialization import sha256_hex
@@ -1076,3 +1078,42 @@ def test_the_card_does_not_overstate_what_the_allow_list_checks() -> None:
     assert "Every host in a retrieval" not in card
     # Normalised: the card hard-wraps, so the phrase can be split across lines.
     assert "requested URL and the final URL after redirects" in " ".join(card.split())
+
+
+# --------------------------------------------------------------- removing what we no longer publish
+
+
+def test_stale_paths_are_the_remote_files_the_plan_does_not_contain() -> None:
+    documents, images, manifest = assembled()
+    plan = build_plan(repo="a/b", manifest=manifest, documents=documents, images=images)
+    remote = {file.path: file.sha256 for file in plan.files}
+    remote["data/old.jsonl"] = "0" * 64
+    remote["images/ab/cd/" + "a" * 64 + ".png"] = "1" * 64
+
+    assert stale_paths(plan, remote) == ["data/old.jsonl", "images/ab/cd/" + "a" * 64 + ".png"]
+
+
+def test_a_hub_managed_file_is_never_stale() -> None:
+    """`.gitattributes` belongs to the Hub. Deleting it would fight it over LFS tracking."""
+    documents, images, manifest = assembled()
+    plan = build_plan(repo="a/b", manifest=manifest, documents=documents, images=images)
+    assert stale_paths(plan, {".gitattributes": "x"}) == []
+    assert ".gitattributes" in HUB_MANAGED_FILES
+
+
+def test_nothing_is_stale_when_the_remote_matches_the_plan() -> None:
+    documents, images, manifest = assembled()
+    plan = build_plan(repo="a/b", manifest=manifest, documents=documents, images=images)
+    assert stale_paths(plan, {file.path: file.sha256 for file in plan.files}) == []
+
+
+def test_a_remote_holding_extra_files_is_not_a_no_op() -> None:
+    """REGRESSION: `is_noop` looked only at planned files, so a publication whose entire purpose
+    was removing 203 files reported "already published and identical" and removed nothing."""
+    documents, images, manifest = assembled()
+    plan = build_plan(repo="a/b", manifest=manifest, documents=documents, images=images)
+    remote = {file.path: file.git_blob_sha1 for file in plan.files}
+    assert is_noop(plan, remote)
+
+    remote["data/left-behind.jsonl"] = "0" * 40
+    assert not is_noop(plan, remote)

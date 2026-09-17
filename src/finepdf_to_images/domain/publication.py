@@ -605,13 +605,36 @@ def _jsonl(rows: Sequence[Mapping[str, Any]]) -> bytes:
     return b"".join(canonical_bytes(dict(row)) + b"\n" for row in rows)
 
 
+#: Files the Hub manages itself. Deleting this would fight the Hub over LFS tracking rules.
+HUB_MANAGED_FILES: frozenset[str] = frozenset({".gitattributes"})
+
+
+def stale_paths(plan: PublicationPlan, remote: Mapping[str, str]) -> list[str]:
+    """Remote paths this plan no longer contains, and therefore should stop publishing.
+
+    A publication is a statement of what the dataset *is*, not a list of things to add to it.
+    Without this the repository only ever grows: the pilot accumulated 190 loose image files, 3
+    PDFs and four JSONL files across successive runs, none of which any later plan mentioned.
+
+    Files the Hub manages are excluded -- see :data:`HUB_MANAGED_FILES`.
+    """
+    planned = {file.path for file in plan.files}
+    return sorted(set(remote) - planned - HUB_MANAGED_FILES)
+
+
 def is_noop(plan: PublicationPlan, remote: Mapping[str, str]) -> bool:
-    """Whether every planned file is already on the Hub with exactly these bytes.
+    """Whether the Hub already holds exactly this publication -- no more, no less.
 
     ``remote`` maps path to whichever content identity the Hub reported -- a git blob id for an
     ordinary file, a SHA-256 for an LFS object. Idempotency is decided by content either way, so
     re-running the same pilot is a no-op no matter how many times it happens.
+
+    Extra remote files count. Ignoring them -- as this did before deletion existed -- meant a
+    publication whose whole purpose was removing files reported "already published and identical"
+    and removed nothing.
     """
+    if stale_paths(plan, remote):
+        return False
     return all(file.matches(remote.get(file.path)) for file in plan.files)
 
 

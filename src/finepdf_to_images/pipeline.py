@@ -35,6 +35,7 @@ from finepdf_to_images.domain.publication import (
     cleared_pdf_digests,
     cleared_row_ids,
     is_noop,
+    stale_paths,
 )
 from finepdf_to_images.domain.publication import build_manifest as build_publication_manifest
 from finepdf_to_images.domain.retrieval import (
@@ -656,14 +657,17 @@ def run_publish(
         for file in plan.files:
             write_bytes(out_dir / file.path, file.data)
 
-    noop = is_noop(plan, hub.file_digests(repo))
+    # Read once: a second read could see a different remote, and then the no-op decision and the
+    # deletion list would be derived from two different views of the same repository.
+    remote = hub.file_digests(repo)
+    noop = is_noop(plan, remote)
     if not apply:
         return PublicationResult(
             plan=plan, applied=False, noop=noop, revision="", verified=(), missing=()
         )
     if noop:
         return _already_published(hub, plan, repo)
-    return _upload_and_verify(hub, plan, repo, manifest)
+    return _upload_and_verify(hub, plan, repo, manifest, stale_paths(plan, remote))
 
 
 def _already_published(hub: Hub, plan: PublicationPlan, repo: str) -> PublicationResult:
@@ -679,10 +683,18 @@ def _already_published(hub: Hub, plan: PublicationPlan, repo: str) -> Publicatio
 
 
 def _upload_and_verify(
-    hub: Hub, plan: PublicationPlan, repo: str, manifest: Mapping[str, Any]
+    hub: Hub,
+    plan: PublicationPlan,
+    repo: str,
+    manifest: Mapping[str, Any],
+    stale: Sequence[str] = (),
 ) -> PublicationResult:
-    """Publish, then read the Hub back and check it holds exactly what we sent."""
-    revision = hub.upload(plan, _commit_message(manifest))
+    """Publish, then read the Hub back and check it holds exactly what we sent.
+
+    ``stale`` is removed in the same commit, so the published revision is never a mixture of the
+    old shape and the new one.
+    """
+    revision = hub.upload(plan, _commit_message(manifest), stale)
     published = hub.file_digests(repo)
     missing = tuple(file.path for file in plan.files if not file.matches(published.get(file.path)))
     return PublicationResult(
