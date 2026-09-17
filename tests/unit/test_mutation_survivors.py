@@ -1,6 +1,6 @@
 """Tests written to kill specific surviving mutants.
 
-Mutation testing over the pure domain surfaced two classes of survivor that mattered:
+Mutation testing over the pure domain surfaced three classes of survivor that mattered:
 
 **Schema key names.** A mutant renaming ``"dataset"`` to ``"DATASET"`` in a manifest survived,
 because nothing asserted the exact keys. Those key names are the published contract -- the dataset
@@ -9,6 +9,11 @@ card documents them and consumers index on them -- so a rename must fail the bui
 **Boundaries.** Mutants turning ``< 1`` into ``<= 1`` or ``>= MIN`` into ``> MIN`` survived because
 only the far side of each boundary was tested. A limit that rejects a legitimate value is as much a
 bug as one that accepts an illegitimate one.
+
+**Published values.** Mutants replacing a lookup key with ``None`` -- ``image.get("sha256")``
+becoming ``image.get(None)`` -- survived across both published-row builders. The rows kept every
+documented key and the schema tests passed; the columns were simply empty. See the last section of
+this file.
 
 The remaining survivors are overwhelmingly diagnostic-string mutations -- upper-casing a message,
 replacing it with ``None``. Those are deliberately not chased: asserting the exact prose of every
@@ -26,6 +31,7 @@ from finepdf_to_images.domain.policy import (
     decide,
     policy_summary,
 )
+from finepdf_to_images.domain.publication import build_document_rows, build_image_rows
 from finepdf_to_images.domain.retrieval import (
     PDF_MAGIC,
     RetrievalLimits,
@@ -293,3 +299,173 @@ def test_a_one_pixel_image_is_legitimate(width: int, height: int) -> None:
 def test_the_image_path_prefix_is_exact() -> None:
     digest = sha256_hex(PNG)
     assert image_path(digest, "image/png").split("/")[0] == "images"
+
+
+# --------------------------------------------------------------- published row fidelity
+#
+# Mutation testing over the publication stage surfaced a third class of survivor, and unlike the
+# two above it was not cosmetic: mutants replacing a lookup key with ``None`` -- so
+# ``image.get("sha256")`` became ``image.get(None)`` -- survived across both row builders. The
+# published rows still had every documented key, so the schema tests passed; the keys were just
+# all empty. Nothing asserted that a published row carries the *values* the earlier stages
+# produced, which is the one claim the dataset exists to make.
+
+
+def _image(**overrides: object) -> dict[str, object]:
+    image = {
+        "document_row_id": "row-1",
+        "pdf_sha256": "a" * 64,
+        "page_index": 0,
+        "image_index": 1,
+        "sha256": "b" * 64,
+        "mime": "image/png",
+        "width": 12,
+        "height": 34,
+        "byte_size": 56,
+        "duplicate_of": None,
+    }
+    return {**image, **overrides}
+
+
+def test_every_published_image_field_carries_the_extracted_value() -> None:
+    """MUTANT: ``image.get("<key>")`` -> ``image.get(None)`` in :func:`build_image_rows`.
+
+    Survived for all ten fields. Each one is provenance -- ``row_id`` and ``pdf_sha256`` are the
+    only link from an image back to the document and the PDF it came from.
+    """
+    (row,) = build_image_rows([_image()])
+    assert row == {
+        "row_id": "row-1",
+        "pdf_sha256": "a" * 64,
+        "page_index": 0,
+        "image_index": 1,
+        "sha256": "b" * 64,
+        "mime": "image/png",
+        "width": 12,
+        "height": 34,
+        "byte_size": 56,
+        "duplicate_of": None,
+    }
+
+
+def test_an_image_row_is_renamed_from_document_row_id_to_row_id() -> None:
+    """The published name differs from the internal one, so the rename is load-bearing."""
+    (row,) = build_image_rows([_image(document_row_id="xyz")])
+    assert row["row_id"] == "xyz"
+    assert "document_row_id" not in row
+
+
+def test_image_rows_are_ordered_by_pdf_then_page_then_image() -> None:
+    rows = build_image_rows(
+        [
+            _image(pdf_sha256="b" * 64, page_index=0, image_index=0),
+            _image(pdf_sha256="a" * 64, page_index=2, image_index=0),
+            _image(pdf_sha256="a" * 64, page_index=1, image_index=9),
+            _image(pdf_sha256="a" * 64, page_index=1, image_index=2),
+        ]
+    )
+    assert [(r["pdf_sha256"][0], r["page_index"], r["image_index"]) for r in rows] == [
+        ("a", 1, 2),
+        ("a", 1, 9),
+        ("a", 2, 0),
+        ("b", 0, 0),
+    ]
+
+
+def test_every_published_document_field_carries_its_stage_value() -> None:
+    """MUTANT: ``_text(retrieval, "final_url")`` -> ``_text(retrieval, None)``, and eleven more.
+
+    Each survivor emptied one published column while leaving the schema intact.
+    """
+    (row,) = build_document_rows(
+        scored=[
+            {
+                "row_index": 7,
+                "row_id": "row-1",
+                "url": "https://example.org/a.pdf",
+                "relevance": {
+                    "language": "eng_Latn",
+                    "relevant": True,
+                    "score": 5,
+                    "matched_terms": ["soil", "irrigation"],
+                },
+            }
+        ],
+        retrieved=[
+            {
+                "row_id": "row-1",
+                "ok": True,
+                "final_url": "https://cdn.example.org/a.pdf",
+                "reason": "",
+                "sha256": "c" * 64,
+                "byte_size": 2048,
+                "publication": {"disposition": "metadata-only", "license": {"status": "unknown"}},
+            }
+        ],
+        extracted=[{"row_id": "row-1", "image_count": 3}],
+    )
+    assert row == {
+        "row_index": 7,
+        "row_id": "row-1",
+        "url": "https://example.org/a.pdf",
+        "final_url": "https://cdn.example.org/a.pdf",
+        "language": "eng_Latn",
+        "relevant": True,
+        "relevance_score": 5,
+        "matched_terms": ["soil", "irrigation"],
+        "retrieved": True,
+        "failure_reason": "",
+        "pdf_sha256": "c" * 64,
+        "pdf_bytes": 2048,
+        "image_count": 3,
+        "disposition": "metadata-only",
+        "license_status": "unknown",
+    }
+
+
+def test_a_document_row_is_joined_to_its_own_retrieval_and_extraction() -> None:
+    """A key mutant that emptied the join would be invisible with a single row in play."""
+    rows = build_document_rows(
+        scored=[
+            {"row_index": 0, "row_id": "a", "relevance": {}},
+            {"row_index": 1, "row_id": "b", "relevance": {}},
+        ],
+        retrieved=[{"row_id": "b", "ok": True, "sha256": "d" * 64, "byte_size": 11}],
+        extracted=[{"row_id": "b", "image_count": 4}],
+    )
+    assert [(r["row_id"], r["pdf_bytes"], r["image_count"]) for r in rows] == [
+        ("a", 0, 0),
+        ("b", 11, 4),
+    ]
+
+
+def test_a_missing_number_is_published_as_zero_not_one() -> None:
+    """MUTANT: ``_number``'s fallback ``0`` -> ``1``.
+
+    A fabricated count of 1 would be indistinguishable from a document that really did yield one
+    image, so the fallback has to be the value that cannot be mistaken for a measurement.
+    """
+    (row,) = build_document_rows(
+        scored=[{"row_index": 0, "row_id": "a", "relevance": {}}], retrieved=[], extracted=[]
+    )
+    assert row["pdf_bytes"] == 0
+    assert row["image_count"] == 0
+    assert row["relevance_score"] == 0
+
+
+def test_documents_without_a_row_index_sort_after_those_that_have_one() -> None:
+    """MUTANT: ``row["row_index"] is None`` -> ``is not None`` in the sort key.
+
+    Survived because no test mixed present and absent indices. Shard order is the dataset's
+    documented ordering, so a row missing its index must not displace the ordered ones.
+    """
+    rows = build_document_rows(
+        scored=[
+            {"row_index": None, "row_id": "n", "relevance": {}},
+            {"row_index": 2, "row_id": "b", "relevance": {}},
+            {"row_index": 1, "row_id": "a", "relevance": {}},
+        ],
+        retrieved=[],
+        extracted=[],
+    )
+    assert [row["row_id"] for row in rows] == ["a", "b", "n"]
