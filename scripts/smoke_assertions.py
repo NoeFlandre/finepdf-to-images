@@ -31,9 +31,9 @@ def check_retrieve(manifest: pathlib.Path, expected: int) -> None:
     counts, failures = parsed.get("counts"), parsed.get("failures")
     if not isinstance(counts, dict) or not isinstance(failures, dict):
         raise SystemExit(f"{manifest} is not a retrieve manifest: {sorted(parsed)}")
-    if counts["attempted"] != expected:
+    if counts.get("attempted") != expected:
         raise SystemExit(f"expected {expected} attempts, got {counts}")
-    if counts["failed"] != expected or counts["retrieved"] != 0:
+    if counts.get("failed") != expected or counts.get("retrieved") != 0:
         raise SystemExit(f"offline, every row must fail: {counts}")
     if sum(failures.values()) != expected:
         raise SystemExit(f"every failure must carry a reason: {failures}")

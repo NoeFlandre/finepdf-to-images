@@ -59,10 +59,15 @@ regression tests, because an earlier version of it silently matched nothing.
 CRAP(f) = complexity(f)² × (1 − coverage(f))³ + complexity(f)
 ```
 
-A function with **no** recorded statements is treated as *unmeasured*, not as fully covered, and
-fails the gate. That distinction is the whole difference between a gate and a formality: an empty
-coverage report, or one generated before a file grew, otherwise scores every function at 100% and
-passes having measured nothing. Both cases are covered by fixtures in the review history.
+A function with **no** recorded statements is treated as *unmeasured* rather than fully covered,
+and an unmeasured function **with real branching** (complexity > 1) fails the gate. That
+distinction is the whole difference between a gate and a formality: an empty coverage report, or
+one generated before a file grew, otherwise scores every function at 100% and passes having
+measured nothing.
+
+The `complexity > 1` qualifier is deliberate and worth knowing: a straight-line function with no
+coverage data still passes quietly. Every realistic stale or empty report also strips branching
+functions, so the gate fires — but it is a filter, not a total check.
 
 How dangerous a function is to change. High when it is both complicated and poorly covered;
 collapses toward raw complexity as coverage approaches 100%. **Threshold 6** — at full coverage a
