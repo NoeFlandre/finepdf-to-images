@@ -10,9 +10,14 @@ Two properties are deliberate and tested:
 **Entries are keyed by exact host.** Not by suffix. ``nih.gov`` in this file would not clear
 ``evil.nih.gov.attacker.test``, because nothing here is matched as a substring or a suffix.
 
-**Every host in a retrieval's redirect chain must be allow listed, and to the same entry.** A
-request that starts at an allow-listed host and ends somewhere else has left the permission
-behind; inheriting it would let any open redirect launder arbitrary bytes into the publication.
+**Both ends of a retrieval must be allow listed, and to the same entry.** A request that starts
+at an allow-listed host and ends somewhere else has left the permission behind; inheriting it
+would let any open redirect launder arbitrary bytes into the publication.
+
+To be exact about what is checked: the requested URL and the final URL after redirects, because
+those are what ``RetrievalRecord`` carries. Intermediate hops are not recorded and so are not
+checked. The bytes come from the final URL and the request began at the first, so both ends being
+approved is the property that matters -- but "every host in the chain" would overstate it.
 
 None of these documents states a licence in its own text. They are open by *statute* rather than
 by declaration, which is precisely why the decision has to be curated and recorded rather than

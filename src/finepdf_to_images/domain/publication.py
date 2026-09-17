@@ -447,7 +447,17 @@ def _expected_artifact_paths(
     published rows key by ``row_id`` while the raw index keys by ``document_row_id``, so a
     recomputed clearance silently matched nothing and published no images at all.
     """
-    expected = {str(row["sha256"]): str(row["image"]) for row in images if row.get("image")}
+    cleared = cleared_row_ids(documents)
+    expected = {
+        str(row["sha256"]): str(row["image"])
+        for row in images
+        # Both conditions, and the second is the one that matters: the policy's decision about
+        # the owning document, not the caller's assertion that this image ships. Checking only
+        # the index made the check no stricter than its caller for images -- the pipeline joined
+        # correctly, so nothing was exploitable, but the interlock this replaced was removed on
+        # the promise that these checks are stricter than the caller. For images they were not.
+        if row.get("image") and str(row.get("row_id")) in cleared
+    }
     expected.update({digest: artifact_path(digest) for digest in cleared_pdf_digests(documents)})
     return expected
 
@@ -484,6 +494,13 @@ def _check_artifacts(
     expected = _expected_artifact_paths(documents, images)
     for artifact in artifacts:
         _check_one_artifact(artifact, expected)
+
+    by_path = {artifact.path: artifact for artifact in artifacts}
+    if len(by_path) != len(artifacts):
+        raise PublicationError(
+            f"{len(artifacts) - len(by_path)} artifact(s) are repeated. The same file twice would "
+            "count twice against the cap and be uploaded twice."
+        )
 
     total = sum(len(artifact.data) for artifact in artifacts)
     if total > MAX_ARTIFACT_BYTES:

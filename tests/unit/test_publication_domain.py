@@ -1005,3 +1005,60 @@ def test_cleared_image_digests_keeps_one_entry_per_digest() -> None:
 def test_nothing_is_cleared_when_no_row_is() -> None:
     images = [{"document_row_id": "row-1", "sha256": PNG_SHA, "mime": "image/png"}]
     assert cleared_image_digests(images, frozenset()) == {}
+
+
+def test_image_bytes_need_a_cleared_document_not_just_a_populated_index() -> None:
+    """REGRESSION: image clearance was read from the caller's index alone.
+
+    For PDFs the check joined to the policy's `disposition`; for images it trusted the `image`
+    column the caller passed. So `build_plan` -- the documented gate, removed on the promise that
+    it is *stricter* than its caller -- would have accepted image bytes for a document the policy
+    never cleared. The pipeline joined correctly, so nothing was exploitable in practice, which is
+    exactly why it needed a test rather than a reading.
+    """
+    documents = [_cleared_doc(row_id="row-1")]
+    images = [_cleared_image(row_id="row-uncleared")]
+    with pytest.raises(PublicationError, match="cleared for byte publication"):
+        build_plan(
+            repo="a/b",
+            manifest=_manifest_claiming_bytes(documents),
+            documents=documents,
+            images=images,
+            artifacts=[
+                PublishFile(artifact_path(PDF_SHA), PDF),
+                PublishFile(image_path(PNG_SHA, "image/png"), PNG),
+            ],
+        )
+
+
+def test_an_image_of_a_cleared_document_still_publishes() -> None:
+    """The join must not be so strict that the legitimate case stops working."""
+    documents = [_cleared_doc(row_id="row-1")]
+    images = [_cleared_image(row_id="row-1")]
+    plan = build_plan(
+        repo="a/b",
+        manifest=_manifest_claiming_bytes(documents),
+        documents=documents,
+        images=images,
+        artifacts=[
+            PublishFile(artifact_path(PDF_SHA), PDF),
+            PublishFile(image_path(PNG_SHA, "image/png"), PNG),
+        ],
+    )
+    assert image_path(PNG_SHA, "image/png") in {file.path for file in plan.files}
+
+
+def test_the_same_artifact_twice_is_refused() -> None:
+    """Counted twice against the cap and uploaded twice; neither is intended."""
+    documents = [_cleared_doc()]
+    with pytest.raises(PublicationError, match="repeated"):
+        build_plan(
+            repo="a/b",
+            manifest=_manifest_claiming_bytes(documents),
+            documents=documents,
+            images=[],
+            artifacts=[
+                PublishFile(artifact_path(PDF_SHA), PDF),
+                PublishFile(artifact_path(PDF_SHA), PDF),
+            ],
+        )

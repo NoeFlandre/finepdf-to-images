@@ -50,8 +50,11 @@ class PypdfImageExtractor:
     declaring 201 images yielded nothing at all, which threw away 200 usable images to avoid
     unpacking one too many -- and it counted every page's declared images up front, which for
     inline images is itself the expensive part. Stopping at the cap bounds the decoding just as
-    well and leaves the output usable. The cost is that a truncated document's ``image_count`` is
-    a floor rather than a total, which the published row records.
+    well and leaves the output usable -- but only because the names are listed without decoding
+    first. Iterating ``page.images`` instead decodes the whole page before the cap is consulted,
+    which a reviewer measured at 57 MB peak on a 57 KB document to return one image. The cost of
+    truncating is that a truncated document's ``image_count`` is a floor rather than a total,
+    which the published row records.
 
     Neither bound is complete. pypdf decodes a page's **inline** images (the ``BI``/``ID``/``EI``
     operators) while merely listing that page's image names, so the work happens before any count
@@ -106,14 +109,33 @@ class PypdfImageExtractor:
     def _walk(self, pages: list[Any]) -> list[ExtractedImage]:
         images: list[ExtractedImage] = []
         for page_index, page in enumerate(pages):
-            for image_index, image in enumerate(self._page_images(page, page_index)):
+            for image_index, name in enumerate(self._image_names(page, page_index)):
                 if len(images) >= self.max_images:
                     return images
+                image = self._image_at(page, name, page_index)
                 images.append(self._describe(image, page_index, image_index))
         return images
 
-    def _page_images(self, page: Any, page_index: int) -> list[Any]:
-        """Every image on one page, or a diagnostic.
+    def _image_names(self, page: Any, page_index: int) -> list[Any]:
+        """The *names* of a page's images, without decoding any of them.
+
+        ``page.images`` is a lazy sequence whose every access decodes an image -- bytes and a PIL
+        object. Iterating it therefore decodes the whole page before any cap can be consulted,
+        which is what made a 57 KB document peak at 57 MB. Listing ``keys()`` first, and fetching
+        only the images actually wanted, keeps the decoding bounded by ``max_images`` rather than
+        by what the document declares.
+
+        The catch is deliberately broad, for the same reason as :meth:`_image_at`.
+        """
+        try:
+            return list(page.images.keys())
+        except Exception as error:
+            raise ImageExtractionError(
+                f"page {page_index} images unreadable: {type(error).__name__}: {error}"
+            ) from error
+
+    def _image_at(self, page: Any, name: Any, page_index: int) -> Any:
+        """Decode exactly one image.
 
         The catch is deliberately broad. A real run hit ``pypdf.errors.DependencyError:
         jbig2dec binary is not available`` -- an optional external decoder this pilot has no
@@ -122,7 +144,7 @@ class PypdfImageExtractor:
         a per-document failure with a reason, not a crash.
         """
         try:
-            return list(page.images)
+            return page.images[name]
         except Exception as error:
             raise ImageExtractionError(
                 f"page {page_index} images unreadable: {type(error).__name__}: {error}"

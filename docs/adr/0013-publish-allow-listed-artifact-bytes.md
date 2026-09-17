@@ -36,15 +36,20 @@ the documents that *are* free to republish are free by **statute**, and no scann
      or legal nature.
    - `eeas.europa.eu` — EU institutional document; reuse authorised under Commission Decision
      2011/833/EU on equivalent attribution terms.
-3. **Every host in a retrieval's redirect chain must be allow listed, and to the same entry.** A
-   request that starts at an approved host and ends elsewhere has left the permission behind.
-   Without this, any open redirect on an approved host launders arbitrary bytes into the dataset.
+3. **Both ends of a retrieval must be allow listed, and to the same entry.** A request that
+   starts at an approved host and ends elsewhere has left the permission behind. Without this, any
+   open redirect on an approved host launders arbitrary bytes into the dataset. Precisely: the
+   requested URL and the final URL after redirects, which is what `RetrievalRecord` carries.
+   Intermediate hops are not recorded, so "every host in the chain" would overstate it.
 4. **Matching is by exact host, never by suffix or substring.** `nih.gov` does not clear
    `evil.nih.gov.attacker.test`, and `ntp.niehs.nih.gov` appearing in a path or query clears
    nothing.
 5. **Replace the interlock with checks that are stricter than the caller.** An artifact ships only
    if its path is the content-addressed path for the bytes actually passed, its digest belongs to a
-   row the policy cleared, and the total stays under `MAX_ARTIFACT_BYTES` (64 MB).
+   row the policy cleared, and the total stays under `MAX_ARTIFACT_BYTES` (64 MB). "Stricter than
+   the caller" has to hold for *both* payloads: an early version joined PDFs to the policy's
+   `disposition` but took the image column at face value, so for images the check was exactly as
+   strong as its caller. Image clearance now joins to `cleared_row_ids` as well.
 6. **The card's claim and the payload are checked against each other**, in both directions. A
    manifest saying source bytes are republished with no artifact in the plan is a published
    falsehood, and so is the reverse.

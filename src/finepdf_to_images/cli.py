@@ -380,16 +380,17 @@ def _add_publish_parser(subparsers: argparse._SubParsersAction) -> None:
         "--pdf-root",
         default=None,
         help=(
-            "directory holding the retrieved PDFs (the `retrieve` output). Required to publish "
-            "PDF bytes for allow-listed sources; without it none are uploaded."
+            "directory holding the retrieved PDFs (the `retrieve` output). Required whenever "
+            "the policy cleared any row for byte publication: the run fails rather than "
+            "publishing a card that claims bytes it does not carry."
         ),
     )
     parser.add_argument(
         "--image-root",
         default=None,
         help=(
-            "directory holding the extracted images (the `extract` output). Required to publish "
-            "image bytes for allow-listed sources; without it none are uploaded."
+            "directory holding the extracted images (the `extract` output). Required whenever "
+            "any published image row points at bytes, for the same reason as --pdf-root."
         ),
     )
     parser.add_argument(

@@ -13,6 +13,7 @@ how TD-007 came to be written down.
 from __future__ import annotations
 
 import pathlib
+from typing import Any
 
 import pytest
 
@@ -172,7 +173,7 @@ def test_a_missing_optional_decoder_is_a_document_failure_not_a_crash(
     def explode(self: object, page: object, page_index: int) -> list[object]:
         raise DependencyError("jbig2dec binary is not available.")
 
-    monkeypatch.setattr(PypdfImageExtractor, "_page_images", explode)
+    monkeypatch.setattr(PypdfImageExtractor, "_image_names", explode)
     with pytest.raises(ImageExtractionError, match="jbig2dec"):
         extractor.extract(pdf("two-images.pdf"))
 
@@ -183,7 +184,7 @@ def test_any_unexpected_library_error_becomes_a_diagnostic(
     def explode(self: object, page: object, page_index: int) -> list[object]:
         raise RuntimeError("something pypdf never documented")
 
-    monkeypatch.setattr(PypdfImageExtractor, "_page_images", explode)
+    monkeypatch.setattr(PypdfImageExtractor, "_image_names", explode)
     with pytest.raises(ImageExtractionError, match="RuntimeError"):
         extractor.extract(pdf("two-images.pdf"))
 
@@ -205,23 +206,58 @@ def test_the_image_bound_truncates_rather_than_refusing_the_document() -> None:
 
 
 def test_no_image_is_decoded_past_the_bound(monkeypatch: pytest.MonkeyPatch) -> None:
-    """REGRESSION: the count was checked while appending, so a whole page of XObjects had been
-    decoded before the bound was noticed -- 283 MB on a 395 KB document.
+    """REGRESSION: the bound has twice failed to bound the *decoding* rather than the output.
 
-    Truncation has to keep that property: decoding must stop *at* the cap, not run to the end of
-    the document and slice. This asserts only that *our* decode path stops. It cannot observe
-    decoding inside pypdf, which is the gap TD-008 records.
+    First the count was checked while appending, so a whole page of XObjects was decoded before
+    the limit was noticed -- 283 MB on a 395 KB document. Then truncation replaced the refusal but
+    iterated ``page.images``, a lazy sequence whose every access decodes an image, so a page was
+    again fully decoded to return one image: a reviewer measured 57 MB peak on a 57 KB document
+    with ``max_images=1``.
+
+    An earlier version of this test spied on ``_describe``, which runs *after* pypdf has decoded,
+    so it passed in both broken states. It now spies on the decode itself and fails in both.
     """
-    decoded: list[int] = []
-    original = PypdfImageExtractor._describe
+    decoded: list[Any] = []
+    original = PypdfImageExtractor._image_at
 
-    def spy(self: object, image: object, page_index: int, image_index: int) -> object:
-        decoded.append(1)
-        return original(self, image, page_index, image_index)  # ty: ignore[invalid-argument-type]
+    def spy(self: Any, page: Any, name: Any, page_index: int) -> Any:
+        decoded.append(name)
+        return original(self, page, name, page_index)
 
-    monkeypatch.setattr(PypdfImageExtractor, "_describe", spy)
+    monkeypatch.setattr(PypdfImageExtractor, "_image_at", spy)
     assert len(PypdfImageExtractor(max_images=1).extract(pdf("two-images.pdf"))) == 1
-    assert decoded == [1], "decoding must stop at the cap, not continue and discard"
+    assert len(decoded) == 1, f"decoded {len(decoded)} images to return 1: the cap bounds output"
+
+
+def test_the_bound_limits_decoding_inside_pypdf_not_just_our_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Count the decodes *pypdf* performs, which is where the memory actually goes.
+
+    ``page.images`` is a lazy sequence: every ``__getitem__`` decodes an image into bytes and a
+    PIL object. Listing ``keys()`` does not. This asserts the extractor takes the second route,
+    so the cost is bounded by ``max_images`` rather than by what the page declares -- the property
+    a reviewer measured as lost (57 MB peak on a 57 KB document to return one image).
+    """
+    # ``VirtualListImages``, not ``_VirtualList``: an earlier version of this test patched the
+    # latter, intercepted nothing, and passed against a build that decoded the whole page.
+    from pypdf._page import VirtualListImages
+
+    decodes: list[Any] = []
+    original = VirtualListImages.__getitem__
+
+    def counting(self: Any, item: Any) -> Any:
+        decodes.append(item)
+        return original(self, item)
+
+    monkeypatch.setattr(VirtualListImages, "__getitem__", counting)
+    images = PypdfImageExtractor(max_images=1).extract(pdf("two-images.pdf"))
+
+    assert len(images) == 1
+    assert len(decodes) == 1, (
+        f"pypdf decoded {len(decodes)} images to return 1 -- the page was materialised before "
+        "the cap was consulted"
+    )
 
 
 def test_a_document_with_too_many_pages_is_refused() -> None:
