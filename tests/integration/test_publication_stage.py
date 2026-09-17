@@ -17,10 +17,7 @@ from finepdf_to_images.adapters.hub import FakeHub, HubError
 from finepdf_to_images.domain.images import image_path
 from finepdf_to_images.domain.publication import (
     CARD_FILE,
-    DOCUMENTS_FILE,
-    DOCUMENTS_RELEVANT_FILE,
-    DOCUMENTS_RETRIEVED_FILE,
-    IMAGES_FILE,
+    DATASET_FILE,
     MANIFEST_FILE,
     PublicationError,
 )
@@ -78,14 +75,7 @@ def test_a_dry_run_writes_nothing_to_the_hub() -> None:
 
 def test_a_dry_run_reports_the_exact_files_and_counts() -> None:
     result = publish(FakeHub())
-    assert [file.path for file in result.plan.files] == [
-        CARD_FILE,
-        MANIFEST_FILE,
-        DOCUMENTS_FILE,
-        DOCUMENTS_RELEVANT_FILE,
-        DOCUMENTS_RETRIEVED_FILE,
-        IMAGES_FILE,
-    ]
+    assert [file.path for file in result.plan.files] == [CARD_FILE, DATASET_FILE]
     assert result.plan.manifest["counts"]["documents"] == 2
     assert result.plan.manifest["counts"]["relevant"] == 1
     assert all(file.size > 0 and len(file.sha256) == 64 for file in result.plan.files)
@@ -102,7 +92,7 @@ def test_a_dry_run_can_write_the_planned_files_locally_for_review(
         local = tmp_path / file.path
         assert local.is_file()
         assert local.read_bytes() == file.data
-    assert "No source PDF or image bytes are republished" in (tmp_path / CARD_FILE).read_text()
+    assert "# finepdf-to-images" in (tmp_path / CARD_FILE).read_text()
 
 
 # --------------------------------------------------------------------------- apply
@@ -113,14 +103,7 @@ def test_applying_uploads_every_file_in_one_commit() -> None:
     result = publish(hub, apply=True)
     assert result.applied is True
     assert result.ok
-    assert set(hub.files) == {
-        CARD_FILE,
-        MANIFEST_FILE,
-        DOCUMENTS_FILE,
-        DOCUMENTS_RELEVANT_FILE,
-        DOCUMENTS_RETRIEVED_FILE,
-        IMAGES_FILE,
-    }
+    assert set(hub.files) == {CARD_FILE, DATASET_FILE}
     assert len(hub.commits) == 1, "a half-updated published state must not be possible"
     assert result.revision == hub.head
 
@@ -146,12 +129,12 @@ def test_a_failed_verification_is_reported_not_swallowed() -> None:
     class LosesAFile(FakeHub):
         def upload(self, plan, message, delete=()):  # type: ignore[no-untyped-def]
             revision = super().upload(plan, message, delete)
-            self.files.pop(DOCUMENTS_FILE, None)
+            self.files.pop(DATASET_FILE, None)
             return revision
 
     result = publish(LosesAFile(), apply=True)
     assert not result.ok
-    assert result.missing == (DOCUMENTS_FILE,)
+    assert result.missing == (DATASET_FILE,)
 
 
 # --------------------------------------------------------------------------- idempotency
@@ -210,44 +193,53 @@ def test_publishing_an_empty_run_still_produces_a_coherent_dataset() -> None:
         apply=True,
     )
     assert result.plan.manifest["counts"]["documents"] == 0
-    assert set(hub.files) == {
-        CARD_FILE,
-        MANIFEST_FILE,
-        DOCUMENTS_FILE,
-        DOCUMENTS_RELEVANT_FILE,
-        DOCUMENTS_RETRIEVED_FILE,
-        IMAGES_FILE,
-    }
-    assert hub.files[DOCUMENTS_FILE] == b""
-    assert hub.files[DOCUMENTS_RELEVANT_FILE] == b""
-    assert hub.files[DOCUMENTS_RETRIEVED_FILE] == b""
+    assert set(hub.files) == {CARD_FILE, DATASET_FILE}
+    assert _published_rows(hub) == [], "an empty run publishes a readable, empty table"
 
 
 # --------------------------------------------------------------------------- published content
 
 
-def test_the_published_rows_are_canonical_jsonl() -> None:
-    hub = FakeHub()
-    publish(hub, apply=True)
-    for path, expected_count in [
-        (DOCUMENTS_FILE, 2),
-        (DOCUMENTS_RELEVANT_FILE, 1),
-        (DOCUMENTS_RETRIEVED_FILE, 1),
-    ]:
-        lines = hub.files[path].decode().splitlines()
-        assert len(lines) == expected_count
-        for line in lines:
-            row = json.loads(line)
-            assert list(row) == sorted(row), f"canonical JSON sorts its keys: {path}"
+def _published_rows(hub: FakeHub) -> list[dict[str, Any]]:
+    """The published table, read back the way a consumer reads it."""
+    import io
+
+    import pyarrow.parquet as pq
+
+    return pq.read_table(io.BytesIO(hub.files[DATASET_FILE])).to_pylist()
 
 
-def test_the_published_manifest_is_readable_json_with_the_source_pinned() -> None:
+def test_the_published_table_has_exactly_the_four_reader_facing_columns() -> None:
+    """18 columns of pipeline bookkeeping is what this layout exists to stop publishing."""
     hub = FakeHub()
     publish(hub, apply=True)
-    manifest = json.loads(hub.files[MANIFEST_FILE])
-    assert manifest["source"]["revision"] == SOURCE["revision"]
-    assert manifest["publishes_source_bytes"] is False
-    assert manifest["encoder"]["pypdf"] == "6.19.0"
+    rows = _published_rows(hub)
+    assert [list(row) for row in rows] == [["pdf_url", "text", "images", "matched_terms"]]
+
+
+def test_only_relevant_documents_are_published() -> None:
+    """948 of 1000 pilot rows were rejects a reader has no use for."""
+    hub = FakeHub()
+    result = publish(hub, apply=True, documents=5)
+    assert result.plan.manifest["counts"]["documents"] == 5
+    assert len(_published_rows(hub)) == 1
+
+
+def test_matched_terms_survive_into_the_published_row() -> None:
+    """The column that lets a reader argue with the selection instead of trusting it."""
+    hub = FakeHub()
+    publish(hub, apply=True)
+    assert _published_rows(hub)[0]["matched_terms"] == ["maize", "irrigation"]
+
+
+def test_the_card_pins_the_source_revision_now_that_no_manifest_is_published() -> None:
+    """Provenance moved to the card; it must not simply disappear with manifest.json."""
+    hub = FakeHub()
+    publish(hub, apply=True)
+    card = hub.files[CARD_FILE].decode()
+    assert SOURCE["revision"] in card
+    assert SOURCE["dataset"] in card
+    assert MANIFEST_FILE not in hub.files
 
 
 def test_no_published_file_contains_anything_resembling_a_credential() -> None:
@@ -375,7 +367,7 @@ def test_cli_reports_a_failed_verification_as_a_failure(
     class LosesAFile(FakeHub):
         def upload(self, plan, message, delete=()):  # type: ignore[no-untyped-def]
             revision = super().upload(plan, message, delete)
-            self.files.pop(DOCUMENTS_FILE, None)
+            self.files.pop(DATASET_FILE, None)
             return revision
 
     monkeypatch.setattr(cli, "HUB_FACTORY", LosesAFile)
@@ -442,14 +434,7 @@ def test_a_hub_that_reports_nothing_is_never_a_noop() -> None:
     hub = Silent()
     result = publish(hub, apply=True)
     assert result.noop is False
-    assert set(result.missing) == {
-        CARD_FILE,
-        MANIFEST_FILE,
-        DOCUMENTS_FILE,
-        DOCUMENTS_RELEVANT_FILE,
-        DOCUMENTS_RETRIEVED_FILE,
-        IMAGES_FILE,
-    }
+    assert set(result.missing) == {CARD_FILE, DATASET_FILE}
 
 
 def test_cli_reports_a_hub_failure_as_a_diagnostic_not_a_traceback(
@@ -562,15 +547,21 @@ def _publish_cleared(hub: FakeHub, run: dict[str, Any], **overrides: Any) -> Pub
     )
 
 
-def test_a_cleared_run_publishes_the_artifact_bytes(tmp_path: pathlib.Path) -> None:
+def test_a_cleared_run_embeds_the_image_and_republishes_no_loose_files(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Cleared image bytes now ride inside the row; the PDF is no longer republished at all.
+
+    The loose `images/ab/cd/<digest>.png` files were invisible in the viewer and reachable only by
+    joining two JSONL files by hand, which is what this layout replaces.
+    """
     run = _cleared_run(tmp_path, pdf=b"%PDF-1.4 cleared", image=b"\x89PNG\r\n\x1a\npixels")
     hub = FakeHub()
     result = _publish_cleared(hub, run, apply=True)
 
-    published = {file.path: file.data for file in result.plan.files}
-    assert published[artifact_path(sha256_hex(b"%PDF-1.4 cleared"))] == b"%PDF-1.4 cleared"
-    assert image_path(sha256_hex(b"\x89PNG\r\n\x1a\npixels"), "image/png") in published
+    assert set(hub.files) == {CARD_FILE, DATASET_FILE}
     assert not result.missing
+    assert _published_rows(hub)[0]["images"][0]["bytes"] == b"\x89PNG\r\n\x1a\npixels"
 
 
 def test_the_published_row_points_at_the_bytes_that_shipped(tmp_path: pathlib.Path) -> None:
@@ -578,14 +569,15 @@ def test_the_published_row_points_at_the_bytes_that_shipped(tmp_path: pathlib.Pa
     run = _cleared_run(tmp_path, pdf=b"%PDF-1.4 cleared", image=b"\x89PNG\r\n\x1a\npixels")
     result = _publish_cleared(FakeHub(), run)
 
-    files = {file.path for file in result.plan.files}
-    rows = [
-        json.loads(line)
-        for file in result.plan.files
-        if file.path == "data/images.jsonl"
-        for line in file.data.decode().splitlines()
-    ]
-    assert rows and all(row["image"] in files for row in rows)
+    import io
+
+    import pyarrow.parquet as pq
+
+    dataset = next(file for file in result.plan.files if file.path == DATASET_FILE)
+    rows = pq.read_table(io.BytesIO(dataset.data)).to_pylist()
+    embedded = rows[0]["images"]
+    assert embedded, "a cleared image must be embedded in the row, not merely referenced"
+    assert embedded[0]["bytes"] == b"\x89PNG\r\n\x1a\npixels"
 
 
 def test_bytes_that_disagree_with_the_index_are_refused(tmp_path: pathlib.Path) -> None:

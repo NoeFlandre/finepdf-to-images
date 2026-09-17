@@ -13,6 +13,7 @@ from typing import Any
 
 from finepdf_to_images.adapters.hub import Hub
 from finepdf_to_images.adapters.images import ImageExtractor, encoder_versions
+from finepdf_to_images.adapters.parquet import encode_dataset
 from finepdf_to_images.adapters.retrieval import Transport, TransportError
 from finepdf_to_images.adapters.source import ShardReader
 from finepdf_to_images.adapters.storage import read_bytes, write_bytes
@@ -28,9 +29,10 @@ from finepdf_to_images.domain.publication import (
     PublicationError,
     PublicationPlan,
     PublishFile,
+    build_dataset_plan,
+    build_dataset_rows,
     build_document_rows,
     build_image_rows,
-    build_plan,
     cleared_image_digests,
     cleared_pdf_digests,
     cleared_row_ids,
@@ -755,14 +757,33 @@ def _plan_publication(
         pdf_root=pdf_root,
         image_root=image_root,
     )
-    plan = build_plan(
-        repo=repo,
-        manifest=manifest,
-        documents=document_rows,
-        images=image_rows,
-        artifacts=artifacts,
-    )
+    # The artifacts were read and digest-verified above, so the bytes embedded in a row are the
+    # same bytes, checked the same way, that the old layout published as loose files.
+    embeddable = {
+        digest: artifact.data
+        for digest, artifact in _artifacts_by_digest(artifacts, shipped_images).items()
+    }
+    dataset = encode_dataset(build_dataset_rows(document_rows, images, embeddable))
+    plan = build_dataset_plan(repo=repo, manifest=manifest, dataset=dataset)
     return plan, manifest
+
+
+def _artifacts_by_digest(
+    artifacts: Sequence[PublishFile], shipped_images: Mapping[str, str]
+) -> dict[str, PublishFile]:
+    """The image artifacts, keyed by digest.
+
+    Only images: a PDF is no longer republished as bytes, so its artifact has no column to land
+    in. Keyed off the digest the policy cleared rather than off the path, so a path convention
+    change cannot quietly empty this mapping.
+    """
+    by_path = {artifact.path: artifact for artifact in artifacts}
+    found: dict[str, PublishFile] = {}
+    for digest, mime in shipped_images.items():
+        artifact = by_path.get(image_path(digest, mime))
+        if artifact is not None:
+            found[digest] = artifact
+    return found
 
 
 def _load_artifacts(

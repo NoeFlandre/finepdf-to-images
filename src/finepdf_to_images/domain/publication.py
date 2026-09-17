@@ -57,6 +57,23 @@ IMAGES_FILE = "data/images.jsonl"
 MANIFEST_FILE = "manifest.json"
 CARD_FILE = "README.md"
 
+#: The published dataset: one parquet, one row per relevant document.
+#:
+#: The six-file JSONL layout this replaces was shaped by the pipeline's stages rather than by a
+#: reader: 203 files, 18 columns of bookkeeping, and 948 of 1000 rows that a reader has no use
+#: for. Images were loose files addressed by digest, invisible in the viewer and reachable only by
+#: joining two JSONL files by hand.
+DATASET_FILE = "data/train-00000-of-00001.parquet"
+
+#: The published columns, as (field, description). Emitted into the card, so the documented
+#: schema is generated from the same tuple the rows are built from and cannot drift from it.
+DATASET_FIELDS: tuple[tuple[str, str], ...] = (
+    ("pdf_url", "the source PDF this row was built from"),
+    ("text", "text extracted from that PDF"),
+    ("images", "the images embedded in that PDF, rendered inline by the viewer"),
+    ("matched_terms", "the vocabulary terms that made this row relevant"),
+)
+
 #: The published row schema, as (field, description). Emitted into the card so the documentation
 #: and the data are generated from one source.
 DOCUMENT_FIELDS: tuple[tuple[str, str], ...] = (
@@ -895,4 +912,211 @@ encoder that produced this run.
 - Embedded images only: no page rendering, no OCR, no layout inference.
 - Retrieval failures are kept as rows with a `failure_reason`, because a dataset that drops its
   failures cannot be used to reproduce the run.
+"""
+
+
+# --------------------------------------------------------------------------- the minimal dataset
+
+
+def build_dataset_rows(
+    documents: Sequence[Mapping[str, Any]],
+    images: Sequence[Mapping[str, Any]],
+    image_bytes: Mapping[str, bytes] | None = None,
+) -> list[dict[str, Any]]:
+    """One row per **relevant** document: the published dataset, as plain values.
+
+    Only relevant rows. The 948 rejected documents in the pilot carry no text worth reading and no
+    images; publishing them made the dataset look like a pipeline log rather than a corpus. What
+    the scorer declined is a fact about the run, and the run's manifest is where it belongs.
+
+    ``matched_terms`` earns its column where the other bookkeeping did not: it is the *reason the
+    row exists*. A relevance score of ``3`` communicates nothing on its own, but `soil`,
+    `irrigation`, `crop rotation` lets a reader argue with the selection instead of taking it on
+    faith.
+
+    ``image_bytes`` maps a digest to the bytes to embed, and holds only digests the policy cleared.
+    A row whose images could not be published gets an empty list -- never a broken reference to
+    bytes that are not there.
+    """
+    by_row = _images_by_row(images)
+    available = dict(image_bytes or {})
+    rows = [
+        {
+            "pdf_url": _text(document, "url"),
+            "text": _text(document, "text"),
+            "images": _embedded_images(by_row.get(str(document.get("row_id")), ()), available),
+            "matched_terms": [str(term) for term in document.get("matched_terms") or ()],
+        }
+        for document in derive_relevant_rows(documents)
+    ]
+    return rows
+
+
+def _images_by_row(images: Sequence[Mapping[str, Any]]) -> dict[str, list[Mapping[str, Any]]]:
+    """The extraction index grouped by owning document, each group in page order.
+
+    Reads ``document_row_id``, the raw extraction key -- the published rows rename it to
+    ``row_id``, and conflating the two silently yields no images at all.
+    """
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for image in images:
+        grouped.setdefault(str(image.get("document_row_id")), []).append(image)
+    for group in grouped.values():
+        group.sort(key=lambda image: (_number(image, "page_index"), _number(image, "image_index")))
+    return grouped
+
+
+def _embedded_images(
+    images: Sequence[Mapping[str, Any]], available: Mapping[str, bytes]
+) -> list[dict[str, Any]]:
+    """The embeddable images for one document, each digest once, in first-occurrence order.
+
+    The same bytes can appear on several pages, and the old index emitted a row per occurrence
+    with ``duplicate_of`` pointing back at the first. Embedding repeats that way would hand a
+    reader the same picture several times, so a digest is carried once.
+
+    ``{"bytes": ..., "path": ...}`` is the shape the Hub's ``Image`` feature decodes; the path is
+    a label the viewer shows, not a file that has to exist in the repository.
+    """
+    embedded: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for image in images:
+        digest = str(image.get("sha256") or "")
+        if digest in seen or digest not in available:
+            continue
+        seen.add(digest)
+        embedded.append(
+            {"bytes": available[digest], "path": image_path(digest, str(image.get("mime") or ""))}
+        )
+    return embedded
+
+
+def dataset_image_bytes(
+    images: Sequence[Mapping[str, Any]], cleared: frozenset[str]
+) -> dict[str, str]:
+    """Digest -> mime for the images this publication may embed.
+
+    Thin by design: the decision about *which* images may ship is the policy's, already recorded
+    per row, and this reads it rather than re-deriving it. A second implementation of a licensing
+    rule is a second thing that can disagree with it.
+    """
+    return cleared_image_digests(images, cleared)
+
+
+def build_dataset_plan(
+    *, repo: str, manifest: Mapping[str, Any], dataset: PublishFile
+) -> PublicationPlan:
+    """The whole publication: a card and a parquet, and nothing else.
+
+    ``dataset`` arrives already encoded because parquet is written by an adapter -- the domain
+    stays free of ``pyarrow``, whose writer output is an I/O concern and whose version decides the
+    published bytes.
+
+    Everything the old layout published that this plan does not name -- the loose images, the
+    PDFs, the four JSONL files, ``manifest.json`` -- is removed by the deletion path, since all of
+    it sits under paths this stage owns.
+    """
+    _validate_repo(repo)
+    if dataset.path != DATASET_FILE:
+        raise PublicationError(
+            f"the dataset must be published at {DATASET_FILE!r}, not {dataset.path!r}"
+        )
+    card = render_dataset_card(manifest, repo)
+    files = (PublishFile(CARD_FILE, card.encode("utf-8")), dataset)
+    return PublicationPlan(repo=repo, files=files, manifest=manifest)
+
+
+def _dataset_schema_table() -> str:
+    rows = "\n".join(f"| `{name}` | {description} |" for name, description in DATASET_FIELDS)
+    return f"| column | meaning |\n| --- | --- |\n{rows}"
+
+
+def render_dataset_card(manifest: Mapping[str, Any], repo: str) -> str:
+    """The card for the minimal dataset.
+
+    The front matter is a machine-read contract, not prose: without a declared ``image`` dtype the
+    column is inferred as a string and the viewer shows a struct instead of a picture. It is
+    generated from :data:`DATASET_FIELDS` so a column cannot be added to the rows and forgotten
+    here, which would make the declared schema disagree with the data and fail the viewer outright.
+
+    Kept deliberately short. Provenance a reader needs to reproduce or cite the run lives here;
+    the pipeline explaining itself to its own maintainers belongs in the repository's docs.
+    """
+    source = manifest["source"]
+    sampling = manifest["sampling"]
+    counts = manifest["counts"]
+    seed = sampling["seed"]
+    allowlist = manifest.get("allowlist") or ()
+    hosts = ", ".join(f"`{entry['host']}`" for entry in allowlist) or "none"
+    return f"""---
+configs:
+  - config_name: default
+    data_files:
+      - split: train
+        path: {DATASET_FILE}
+dataset_info:
+  features:
+    - name: pdf_url
+      dtype: string
+    - name: text
+      dtype: string
+    - name: images
+      sequence:
+        dtype: image
+    - name: matched_terms
+      sequence: string
+license: odc-by
+task_categories:
+- text-classification
+language:
+- en
+tags:
+- agriculture
+- finepdfs
+- proof-of-concept
+pretty_name: FinePDFs agriculture pilot
+---
+
+# finepdf-to-images — agriculture pilot
+
+Agriculture-relevant documents sampled from one pinned shard of
+[HuggingFaceFW/finepdfs](https://huggingface.co/datasets/HuggingFaceFW/finepdfs): the source PDF,
+its extracted text, the images embedded in it, and the vocabulary terms that made it relevant.
+
+One row per relevant document ({counts["relevant"]} of {counts["documents"]} scored).
+
+## Schema
+
+{_dataset_schema_table()}
+
+`matched_terms` is why the row is here. It lets you argue with the selection rather than take it
+on faith.
+
+## Source
+
+| | |
+| --- | --- |
+| dataset | [`{source["dataset"]}`](https://huggingface.co/datasets/{source["dataset"]}) |
+| revision | `{source["revision"]}` |
+| config / split / shard | `{source["config"]}` / `{source["split"]}` / `{source["shard"]}` |
+| sampling | limit {sampling["limit"]}, strategy `{sampling["strategy"]}`, seed `{seed}` |
+
+## Licensing
+
+Text is published under **ODC-BY**, inherited from `{source["dataset"]}`, which must be
+attributed.
+
+Images are republished **only** from sources separately cleared as free to redistribute
+({hosts}). A document whose images were not cleared carries an empty `images` list rather than a
+broken reference. To request removal of anything published here, open an issue on the source
+repository.
+
+## Use
+
+```python
+from datasets import load_dataset
+
+rows = load_dataset("{repo}", split="train")
+rows[0]["images"][0]  # a PIL image
+```
 """
