@@ -918,6 +918,46 @@ encoder that produced this run.
 # --------------------------------------------------------------------------- the minimal dataset
 
 
+def check_inputs_match_extraction(
+    *,
+    documents: Sequence[Mapping[str, Any]],
+    images: Sequence[Mapping[str, Any]],
+    extract_manifest: Mapping[str, Any] | None,
+) -> None:
+    """Refuse stage inputs that disagree with the extract manifest that describes them.
+
+    Pointing ``--documents`` or ``--images`` at a truncated, empty or stale file used to shrink the
+    plan silently. That was survivable while a publication could only add files. Now that it also
+    deletes what it does not contain, the same mistake **removes published rows and images from a
+    public dataset**, with exit code 0 and no warning -- and an operator passing a stale path is an
+    ordinary mistake, not an exotic one.
+
+    The extract stage already records a content digest of exactly these two row sets, so the check
+    is an equality rather than a heuristic: it names which file is wrong instead of guessing that
+    "too much" is disappearing.
+
+    A run with no extract manifest is not checked. That is the documented way to publish without
+    one, and refusing it here would break callers that never had an extraction step.
+    """
+    if not extract_manifest:
+        return
+    for label, rows, key in (
+        ("--documents", documents, "documents_digest"),
+        ("--images", images, "images_digest"),
+    ):
+        expected = extract_manifest.get(key)
+        if expected is None:
+            continue
+        actual = content_digest([dict(row) for row in rows])
+        if actual != expected:
+            raise PublicationError(
+                f"{label} does not match the extract manifest: it describes {key} "
+                f"{expected!r} but the file given hashes to {actual!r}. The file is stale, "
+                "truncated, or from another run. Publishing it would delete the published rows "
+                "it no longer mentions."
+            )
+
+
 def build_dataset_rows(
     documents: Sequence[Mapping[str, Any]],
     images: Sequence[Mapping[str, Any]],

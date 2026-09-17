@@ -948,3 +948,108 @@ def test_a_document_contributes_one_row_per_image() -> None:
     assert len(rows) == 3, "one document, three images, three rows"
     assert len({row["pdf_url"] for row in rows}) == 1, "the document's url repeats"
     assert len({row["text"] for row in rows}) == 1, "its text repeats, so each row stands alone"
+
+
+# ------------------------------------------------------------------ stale stage inputs (#33)
+
+
+def _manifest_for(documents: list[Any], images: list[Any]) -> dict[str, Any]:
+    """An extract manifest that honestly describes these two row sets."""
+    from finepdf_to_images.domain.serialization import content_digest
+
+    return {
+        **EXTRACT_MANIFEST,
+        "documents_digest": content_digest(documents),
+        "images_digest": content_digest(images),
+    }
+
+
+def test_a_truncated_documents_file_is_refused_rather_than_shrinking_the_plan() -> None:
+    """Constructed as the mistake, not as a flag assertion.
+
+    An operator points --documents at a stale file holding one fewer row. Publishing it would
+    delete the published rows it no longer mentions, with exit code 0.
+    """
+    documents = [document_row(0), document_row(1)]
+    images = [image_row(0)]
+    manifest = _manifest_for(documents, images)
+
+    with pytest.raises(PublicationError, match="--documents does not match the extract manifest"):
+        run_publish(
+            hub=FakeHub(),
+            repo="a/b",
+            select_manifest=SELECT_MANIFEST,
+            scored=[scored_row(0, relevant=True)],
+            retrieved=[retrieved_row(0)],
+            documents=documents[:-1],
+            images=images,
+            extract_manifest=manifest,
+            image_root=_fixture_image_root(),
+        )
+
+
+def test_an_empty_images_file_is_refused() -> None:
+    """The reviewer's demonstrated case: empty images deleted every published image, ok=True."""
+    documents = [document_row(0)]
+    images = [image_row(0)]
+    manifest = _manifest_for(documents, images)
+
+    with pytest.raises(PublicationError, match="--images does not match the extract manifest"):
+        run_publish(
+            hub=FakeHub(),
+            repo="a/b",
+            select_manifest=SELECT_MANIFEST,
+            scored=[scored_row(0, relevant=True)],
+            retrieved=[retrieved_row(0)],
+            documents=documents,
+            images=[],
+            extract_manifest=manifest,
+        )
+
+
+def test_inputs_that_match_the_extract_manifest_publish_normally() -> None:
+    """The guard must not refuse a correct run -- it is an equality, not a heuristic."""
+    documents = [document_row(0)]
+    images = [image_row(0)]
+    hub = FakeHub()
+    result = run_publish(
+        hub=hub,
+        repo="a/b",
+        select_manifest=SELECT_MANIFEST,
+        scored=[scored_row(0, relevant=True)],
+        retrieved=[retrieved_row(0)],
+        documents=documents,
+        images=images,
+        extract_manifest=_manifest_for(documents, images),
+        image_root=_fixture_image_root(),
+        apply=True,
+    )
+    assert result.ok
+    assert len(_published_rows(hub)) == 1
+
+
+def test_a_run_without_an_extract_manifest_is_still_allowed() -> None:
+    """Publishing without an extraction step is documented; the guard must not break it."""
+    hub = FakeHub()
+    result = publish(hub, apply=True)
+    assert result.ok
+
+
+def test_the_refusal_names_which_file_is_wrong() -> None:
+    """A good error beats a heuristic: it says which path to look at, and why."""
+    documents = [document_row(0)]
+    images = [image_row(0)]
+    with pytest.raises(PublicationError) as caught:
+        run_publish(
+            hub=FakeHub(),
+            repo="a/b",
+            select_manifest=SELECT_MANIFEST,
+            scored=[scored_row(0, relevant=True)],
+            retrieved=[retrieved_row(0)],
+            documents=documents,
+            images=[],
+            extract_manifest=_manifest_for(documents, images),
+        )
+    message = str(caught.value)
+    assert "--images" in message
+    assert "stale, truncated, or from another run" in message

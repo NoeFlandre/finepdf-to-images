@@ -51,3 +51,19 @@ identical" and removed nothing.
 - `FakeHub` models deletion and records what it was asked to remove, so the dry-run and idempotency
   tests exercise the real behaviour. A dry run deletes nothing, asserted explicitly: deletion is
   exactly the operation that would be easiest to let escape that guarantee.
+## Addendum (2026-09-17): stale stage inputs are refused
+
+Requiring `--image-root` closed the *forgotten argument* hole. It did not close the neighbouring
+one: pointing `--documents`, `--images`, `--scored` or `--retrieved` at a **truncated, empty or
+stale** file still shrank the plan, and a publication deletes what it does not contain — so the
+corresponding published bytes were removed, with exit code 0.
+
+Of the options weighed in #33, the first is now implemented: the stage inputs are cross-checked
+against `--extract-manifest`, which already records a content digest of exactly those row sets.
+That makes the check an equality rather than a heuristic — it names which file is wrong instead of
+guessing that "too much" is disappearing — and it costs nothing at runtime.
+
+The "refuse a large shrink unless `--allow-shrink`" backstop was not added. It guards the same
+hole less precisely, and every input that can shrink the plan is now covered by a digest the
+extract stage already publishes. A run with no extract manifest is still allowed, since publishing
+without an extraction step is documented behaviour.
