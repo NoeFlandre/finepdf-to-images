@@ -414,3 +414,152 @@ def test_images_are_embedded_in_page_order() -> None:
     available = {image["sha256"]: f"page-{index}".encode() for index, image in enumerate(images)}
     rows = build_dataset_rows(_one_relevant_document(), images, available)
     assert [row["image"]["bytes"] for row in rows] == [b"page-1", b"page-2", b"page-0"]
+
+
+# ------------------------------------------------ stage boundaries are read strictly (#51)
+
+
+def test_a_renamed_field_is_refused_rather_than_published_as_an_empty_column() -> None:
+    """REGRESSION: the readers coerced anything unexpected to "", 0 or {}.
+
+    A renamed or misspelled key therefore became a plausible published value -- an empty column in
+    a public dataset, exit code 0. Mutation testing found exactly this: mutants replacing a lookup
+    key survived because "the rows kept every documented key and the columns were simply empty".
+    """
+    scored = [
+        {
+            "row_index": 0,
+            "row_id": "a",
+            "url": "https://fixtures.invalid/a.pdf",
+            "text": "",
+            "relevance": {},
+        }
+    ]
+    retrieved = [
+        {
+            "row_id": "a",
+            "ok": True,
+            "sha256": "d" * 64,
+            # byte_size renamed, as a stage rename or a typo would do
+            "bytes_size": 11,
+            "final_url": "https://fixtures.invalid/a.pdf",
+            "reason": None,
+            "publication": {},
+        }
+    ]
+    with pytest.raises(PublicationError, match="missing 'byte_size'"):
+        build_document_rows(scored=scored, retrieved=retrieved, extracted=[])
+
+
+def test_the_refusal_names_the_field_and_what_the_row_actually_carries() -> None:
+    """A diagnostic that names the key and the row's real keys is what makes this debuggable."""
+    scored = [{"row_index": 0, "row_id": "a", "url": "https://x/a.pdf", "relevance": {}}]
+    with pytest.raises(PublicationError) as caught:
+        build_document_rows(scored=scored, retrieved=[], extracted=[])
+    message = str(caught.value)
+    assert "missing 'text'" in message
+    assert "relevance" in message and "row_id" in message
+
+
+def test_a_field_of_the_wrong_type_is_refused() -> None:
+    """A number where a string belongs is a stage contract break, not something to coerce."""
+    scored = [
+        {"row_index": 0, "row_id": "a", "url": "https://x/a.pdf", "text": 42, "relevance": {}}
+    ]
+    with pytest.raises(PublicationError, match="'text' as int, expected str"):
+        build_document_rows(scored=scored, retrieved=[], extracted=[])
+
+
+def test_a_document_that_was_never_retrieved_is_still_published() -> None:
+    """The legitimate case the strictness must not break.
+
+    A scored document with no retrieval and no extraction block is the pipeline working: most
+    scored rows are never fetched. An absent section defaults; only a *populated* one is required
+    to be complete.
+    """
+    scored = [
+        {"row_index": 0, "row_id": "a", "url": "https://x/a.pdf", "text": "", "relevance": {}}
+    ]
+    (row,) = build_document_rows(scored=scored, retrieved=[], extracted=[])
+    assert row["retrieved"] is False
+    assert row["pdf_bytes"] == 0
+    assert row["failure_reason"] == ""
+
+
+def test_an_optional_field_written_as_null_reads_as_absent() -> None:
+    """A successful retrieval writes reason: null rather than dropping the key."""
+    scored = [
+        {"row_index": 0, "row_id": "a", "url": "https://x/a.pdf", "text": "", "relevance": {}}
+    ]
+    retrieved = [
+        {
+            "row_id": "a",
+            "ok": True,
+            "sha256": "d" * 64,
+            "byte_size": 11,
+            "final_url": "https://x/a.pdf",
+            "reason": None,
+            "publication": {},
+        }
+    ]
+    (row,) = build_document_rows(scored=scored, retrieved=retrieved, extracted=[])
+    assert row["failure_reason"] == ""
+    assert row["retrieved"] is True
+
+
+def test_a_renamed_boolean_is_refused_too() -> None:
+    """`retrieved` came from a bare .get(), so a renamed `ok` silently published False.
+
+    Booleans need their own reader: `bool` is a subclass of `int`, so an int-typed check would
+    accept `True` and a bool-typed one would accept `1`.
+    """
+    scored = [
+        {"row_index": 0, "row_id": "a", "url": "https://x/a.pdf", "text": "", "relevance": {}}
+    ]
+    retrieved = [
+        {
+            "row_id": "a",
+            "was_ok": True,  # renamed from `ok`
+            "sha256": "d" * 64,
+            "byte_size": 11,
+            "final_url": "https://x/a.pdf",
+            "reason": None,
+            "publication": {},
+        }
+    ]
+    with pytest.raises(PublicationError, match="missing 'ok'"):
+        build_document_rows(scored=scored, retrieved=retrieved, extracted=[])
+
+
+def test_a_number_where_a_boolean_belongs_is_refused() -> None:
+    scored = [
+        {"row_index": 0, "row_id": "a", "url": "https://x/a.pdf", "text": "", "relevance": {}}
+    ]
+    retrieved = [
+        {
+            "row_id": "a",
+            "ok": 1,
+            "sha256": "d" * 64,
+            "byte_size": 11,
+            "final_url": "https://x/a.pdf",
+            "reason": None,
+            "publication": {},
+        }
+    ]
+    with pytest.raises(PublicationError, match="'ok' as int, expected bool"):
+        build_document_rows(scored=scored, retrieved=retrieved, extracted=[])
+
+
+def test_a_renamed_matched_terms_is_refused_rather_than_published_empty() -> None:
+    """matched_terms is the column that makes the selection arguable; empty is not a value."""
+    scored = [
+        {
+            "row_index": 0,
+            "row_id": "a",
+            "url": "https://x/a.pdf",
+            "text": "",
+            "relevance": {"relevant": True, "score": 2, "language": "en", "terms": ["maize"]},
+        }
+    ]
+    with pytest.raises(PublicationError, match="missing 'matched_terms'"):
+        build_document_rows(scored=scored, retrieved=[], extracted=[])
