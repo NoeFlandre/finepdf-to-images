@@ -68,10 +68,10 @@ DATASET_FILE = "data/train-00000-of-00001.parquet"
 #: The published columns, as (field, description). Emitted into the card, so the documented
 #: schema is generated from the same tuple the rows are built from and cannot drift from it.
 DATASET_FIELDS: tuple[tuple[str, str], ...] = (
-    ("pdf_url", "the source PDF this row was built from"),
+    ("pdf_url", "the source PDF this image came from"),
+    ("image", "the image itself"),
     ("text", "text extracted from that PDF"),
-    ("images", "the images embedded in that PDF, rendered inline by the viewer"),
-    ("matched_terms", "the vocabulary terms that made this row relevant"),
+    ("matched_terms", "the vocabulary terms that made the document relevant"),
 )
 
 #: The published row schema, as (field, description). Emitted into the card so the documentation
@@ -934,27 +934,35 @@ def build_dataset_rows(
     `irrigation`, `crop rotation` lets a reader argue with the selection instead of taking it on
     faith.
 
-    **A document with no image is dropped.** This is `finepdf-to-images`: a row carrying no
-    picture does not show what the pilot is for. The filter is on what actually embeds, so every
-    published row is one a reader can see something in -- no empty ``images`` column, and no row
-    that silently means "this had images but you may not have them".
+    **One row per image, not per document.** A list-of-images column is typed correctly by
+    `datasets-server` but the viewer renders it as JSON rather than as pictures, so the dataset's
+    whole point was invisible to anyone who had not written code against it. A scalar ``image``
+    column renders as a thumbnail. Repeating a document's text across its images costs almost
+    nothing once parquet dictionary-compresses it -- 31 MB of logical duplication came to about
+    90 KB on the pilot.
+
+    **A document with no image contributes no rows.** This is `finepdf-to-images`: every published
+    row carries a picture, by construction rather than by filter.
 
     ``image_bytes`` maps a digest to the bytes to embed. A digest missing from it cannot be
-    embedded, and a document left with nothing embeddable drops out rather than shipping a broken
-    reference.
+    embedded, and a document left with nothing embeddable simply produces no rows rather than
+    shipping a broken reference.
     """
     by_row = _images_by_row(images)
     available = dict(image_bytes or {})
-    rows = [
-        {
-            "pdf_url": _text(document, "url"),
-            "text": _text(document, "text"),
-            "images": embedded,
-            "matched_terms": [str(term) for term in document.get("matched_terms") or ()],
-        }
-        for document in derive_relevant_rows(documents)
-        if (embedded := _embedded_images(by_row.get(str(document.get("row_id")), ()), available))
-    ]
+    rows: list[dict[str, Any]] = []
+    for document in derive_relevant_rows(documents):
+        embedded = _embedded_images(by_row.get(str(document.get("row_id")), ()), available)
+        terms = [str(term) for term in document.get("matched_terms") or ()]
+        rows.extend(
+            {
+                "pdf_url": _text(document, "url"),
+                "image": image,
+                "text": _text(document, "text"),
+                "matched_terms": terms,
+            }
+            for image in embedded
+        )
     return rows
 
 
@@ -1085,11 +1093,10 @@ dataset_info:
   features:
     - name: pdf_url
       dtype: string
+    - name: image
+      dtype: image
     - name: text
       dtype: string
-    - name: images
-      sequence:
-        dtype: image
     - name: matched_terms
       sequence: string
 license: odc-by
@@ -1110,9 +1117,9 @@ Agriculture-relevant documents sampled from one pinned shard of
 [HuggingFaceFW/finepdfs](https://huggingface.co/datasets/HuggingFaceFW/finepdfs): the source PDF,
 its extracted text, the images embedded in it, and the vocabulary terms that made it relevant.
 
-{published_rows} {_plural(published_rows, "document")}, each carrying at least one image, drawn
-from {counts["documents"]} scored for agriculture relevance. A document with no image is not
-published.
+One row per image: {published_rows} {_plural(published_rows, "image")} extracted from the
+documents that {counts["documents"]} scored rows yielded. A document's text and matched terms
+repeat across its images, so every row stands alone.
 
 ## Schema
 
@@ -1149,6 +1156,6 @@ row carries its `pdf_url`, so the source of any image can be identified directly
 from datasets import load_dataset
 
 rows = load_dataset("{repo}", split="train")
-rows[0]["images"][0]  # a PIL image
+rows[0]["image"]  # a PIL image
 ```
 """
