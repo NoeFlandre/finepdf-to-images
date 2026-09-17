@@ -114,6 +114,17 @@ a smaller plan. Once a publication also deletes, that same forgotten flag remove
 bytes from a public dataset. Publishing metadata only is expressed by clearing nothing, not by
 leaving out an argument.
 
+## Only rows that carry an image
+
+A document with no embeddable image is not published. This is `finepdf-to-images`: a row with no
+picture does not show what the pilot is for, and an empty `images` column left a reader unable to
+tell "this PDF had no images" from "this PDF had images you may not see".
+
+Images are no longer filtered by licence either — every extracted image is published, and the card
+states plainly that most carry no declared licence and gives a takedown route. That is a deliberate
+decision by the dataset owner, recorded with its consequences in
+[ADR-0015](adr/0015-publish-only-rows-that-carry-an-image.md). ADR-0013 still governs PDF bytes.
+
 ## Idempotency
 
 Publishing the same pilot output twice is an **exact no-op**: no second commit, and the existing

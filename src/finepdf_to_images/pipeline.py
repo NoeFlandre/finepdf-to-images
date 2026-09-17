@@ -29,13 +29,12 @@ from finepdf_to_images.domain.publication import (
     PublicationError,
     PublicationPlan,
     PublishFile,
+    all_image_digests,
     build_dataset_plan,
     build_dataset_rows,
     build_document_rows,
     build_image_rows,
-    cleared_image_digests,
     cleared_pdf_digests,
-    cleared_row_ids,
     is_noop,
     stale_paths,
 )
@@ -754,11 +753,11 @@ def _plan_publication(
 ) -> tuple[PublicationPlan, dict[str, Any]]:
     """Assemble everything a publication would write, without touching the Hub."""
     document_rows = build_document_rows(scored=scored, retrieved=retrieved, extracted=documents)
-    cleared = cleared_row_ids(document_rows)
-    # Not conditioned on ``image_root``: what the policy cleared is a fact about the run, not
-    # about which paths the caller happened to pass. Deriving it from the flag made a forgotten
-    # --image-root look like "nothing was cleared", which silently published a smaller dataset.
-    shipped_images = cleared_image_digests(images, cleared)
+    # Every extracted image is published, not only the policy-cleared ones: the dataset owner
+    # decided this pilot ships what it extracts, and the card carries the takedown route in place
+    # of the filter. Still not conditioned on ``image_root`` -- what the run extracted is a fact
+    # about the run, not about which paths the caller happened to pass.
+    shipped_images = all_image_digests(images)
     image_rows = build_image_rows(images, shipped_images)
     manifest = build_publication_manifest(
         source=select_manifest["source"],

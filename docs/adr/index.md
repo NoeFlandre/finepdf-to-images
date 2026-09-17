@@ -20,3 +20,4 @@ us, including what it makes harder).
 - [ADR-0012 — Derived relevant and retrieved splits for documents](0012-relevant-retrieved-splits.md)
 - [ADR-0013 — Publish artifact bytes for allow-listed sources](0013-publish-allow-listed-artifact-bytes.md)
 - [ADR-0014 — A publication removes what it does not contain](0014-a-publication-removes-what-it-does-not-contain.md)
+- [ADR-0015 — Publish only rows that carry an image](0015-publish-only-rows-that-carry-an-image.md)

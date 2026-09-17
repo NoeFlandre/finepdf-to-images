@@ -7,8 +7,10 @@ than inferred from reading the code.
 
 from __future__ import annotations
 
+import functools
 import json
 import pathlib
+import tempfile
 from typing import Any
 
 import pytest
@@ -39,6 +41,22 @@ SELECT_MANIFEST = {"stage": "select", "source": SOURCE, "sampling": SAMPLING}
 EXTRACT_MANIFEST = {"stage": "extract", "encoder": {"pypdf": "6.19.0", "pillow": "12.3.0"}}
 
 
+@functools.cache
+def _fixture_image_root() -> pathlib.Path:
+    """An image tree holding the bytes ``image_row(0)`` names, built once.
+
+    Every extracted image is now published, so the stage requires an image root whenever the run
+    extracted anything -- there is no longer a licence filter that leaves the fixture's image
+    unshipped. The bytes are the digest's own preimage so the stage's digest check passes.
+    """
+    root = pathlib.Path(tempfile.mkdtemp(prefix="finepdf-images-"))
+    data = b"img-0-0-0"
+    target = root / image_path(sha256_hex(data), "image/png")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    return root
+
+
 def publish(
     hub: FakeHub,
     *,
@@ -57,6 +75,7 @@ def publish(
         extract_manifest=EXTRACT_MANIFEST,
         apply=apply,
         out_dir=out_dir,
+        image_root=_fixture_image_root(),
     )
 
 
@@ -285,6 +304,9 @@ def staged_inputs(tmp_path: pathlib.Path) -> list[str]:
         write("images.jsonl", [image_row(0)]),
         "--extract-manifest",
         write("extract.json", EXTRACT_MANIFEST),
+        # Required now that every extracted image is published rather than only cleared ones.
+        "--image-root",
+        str(_fixture_image_root()),
         "--repo",
         "a/b",
     ]
@@ -746,3 +768,79 @@ def test_a_file_outside_the_paths_we_publish_is_left_alone() -> None:
     assert hub.deleted == ["data/old.jsonl"]
     assert hub.files["LICENSE"] == b"MIT"
     assert hub.files["assets/logo.png"] == b"\x89PNG"
+
+
+# --------------------------------------------------------------------------- images-only rows
+
+
+def test_a_document_with_no_images_is_not_published() -> None:
+    """This is finepdf-to-images: a row carrying no picture does not show what the pilot is for.
+
+    The scorer marks both documents relevant, but only one has an extracted image, so only one is
+    published. Before this filter the other shipped with an empty `images` column.
+    """
+    hub = FakeHub()
+    result = run_publish(
+        hub=hub,
+        repo="NoeFlandre/finepdf-to-images-poc",
+        select_manifest=SELECT_MANIFEST,
+        scored=[scored_row(0, relevant=True), scored_row(1, relevant=True)],
+        retrieved=[retrieved_row(0), retrieved_row(1)],
+        documents=[document_row(0), document_row(1)],
+        images=[image_row(0)],
+        extract_manifest=EXTRACT_MANIFEST,
+        image_root=_fixture_image_root(),
+        apply=True,
+    )
+    assert result.plan.manifest["counts"]["relevant"] == 2
+    rows = _published_rows(hub)
+    assert len(rows) == 1, "the document without an image must not be published"
+    assert rows[0]["images"], "every published row carries at least one image"
+
+
+def test_no_published_row_ever_has_an_empty_image_list() -> None:
+    """The invariant the filter buys: a reader never meets a row that shows nothing."""
+    hub = FakeHub()
+    publish(hub, apply=True, documents=5)
+    rows = _published_rows(hub)
+    assert rows
+    assert all(row["images"] for row in rows)
+
+
+def test_an_image_from_an_uncleared_source_is_still_published() -> None:
+    """The licence filter on images is gone by the dataset owner's decision.
+
+    `retrieved_row(0)` carries no allow-list clearance, so under the previous policy its image
+    was indexed but never shipped. It now ships, and the card carries the takedown route in place
+    of the filter.
+    """
+    hub = FakeHub()
+    publish(hub, apply=True)
+    row = _published_rows(hub)[0]
+    assert row["images"][0]["bytes"] == b"img-0-0-0"
+
+
+def test_the_card_states_the_images_are_not_licence_cleared_and_gives_a_takedown_route() -> None:
+    """Publishing uncleared images is only defensible if the card says so plainly."""
+    hub = FakeHub()
+    publish(hub, apply=True)
+    card = hub.files[CARD_FILE].decode()
+    assert "most carry no declared licence" in card
+    assert "Takedown" in card
+    assert "github.com/NoeFlandre/finepdf-to-images/issues" in card
+
+
+def test_a_run_that_extracted_nothing_publishes_an_empty_table_rather_than_failing() -> None:
+    hub = FakeHub()
+    run_publish(
+        hub=hub,
+        repo="a/b",
+        select_manifest=SELECT_MANIFEST,
+        scored=[scored_row(0, relevant=True)],
+        retrieved=[retrieved_row(0)],
+        documents=[document_row(0)],
+        images=[],
+        extract_manifest=EXTRACT_MANIFEST,
+        apply=True,
+    )
+    assert _published_rows(hub) == []

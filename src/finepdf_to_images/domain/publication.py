@@ -934,9 +934,14 @@ def build_dataset_rows(
     `irrigation`, `crop rotation` lets a reader argue with the selection instead of taking it on
     faith.
 
-    ``image_bytes`` maps a digest to the bytes to embed, and holds only digests the policy cleared.
-    A row whose images could not be published gets an empty list -- never a broken reference to
-    bytes that are not there.
+    **A document with no image is dropped.** This is `finepdf-to-images`: a row carrying no
+    picture does not show what the pilot is for. The filter is on what actually embeds, so every
+    published row is one a reader can see something in -- no empty ``images`` column, and no row
+    that silently means "this had images but you may not have them".
+
+    ``image_bytes`` maps a digest to the bytes to embed. A digest missing from it cannot be
+    embedded, and a document left with nothing embeddable drops out rather than shipping a broken
+    reference.
     """
     by_row = _images_by_row(images)
     available = dict(image_bytes or {})
@@ -944,10 +949,11 @@ def build_dataset_rows(
         {
             "pdf_url": _text(document, "url"),
             "text": _text(document, "text"),
-            "images": _embedded_images(by_row.get(str(document.get("row_id")), ()), available),
+            "images": embedded,
             "matched_terms": [str(term) for term in document.get("matched_terms") or ()],
         }
         for document in derive_relevant_rows(documents)
+        if (embedded := _embedded_images(by_row.get(str(document.get("row_id")), ()), available))
     ]
     return rows
 
@@ -989,6 +995,24 @@ def _embedded_images(
             {"bytes": available[digest], "path": image_path(digest, str(image.get("mime") or ""))}
         )
     return embedded
+
+
+def all_image_digests(images: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """Digest -> mime for **every** extracted image, cleared or not.
+
+    The publication policy gates which *PDF* bytes may be redistributed. It no longer gates the
+    images: the dataset owner decided that this proof of concept publishes every image it
+    extracts, accepting that most sources carry no declared licence. The card states that plainly
+    and carries the takedown route, which is the obligation that replaces the filter.
+
+    Keyed by digest because the same image can appear on several pages and in several documents;
+    it is embedded once per document that references it.
+    """
+    return {
+        digest: str(image.get("mime") or "")
+        for image in images
+        if _DIGEST_RE.match(digest := str(image.get("sha256") or ""))
+    }
 
 
 def dataset_image_bytes(
@@ -1106,10 +1130,14 @@ on faith.
 Text is published under **ODC-BY**, inherited from `{source["dataset"]}`, which must be
 attributed.
 
-Images are republished **only** from sources separately cleared as free to redistribute
-({hosts}). A document whose images were not cleared carries an empty `images` list rather than a
-broken reference. To request removal of anything published here, open an issue on the source
-repository.
+**Images are reproduced from their source PDFs and most carry no declared licence.** This is a
+research proof of concept, not a cleared redistribution. Only `{hosts}` is separately confirmed as
+free to redistribute; every other image is included because it appeared in a document the scorer
+selected, and its copyright remains with its original owner.
+
+**Takedown:** if you hold rights to anything published here and want it removed, open an issue at
+<https://github.com/NoeFlandre/finepdf-to-images/issues> and it will be taken down promptly. Each
+row carries its `pdf_url`, so the source of any image can be identified directly.
 
 ## Use
 
