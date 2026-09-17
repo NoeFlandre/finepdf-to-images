@@ -139,3 +139,16 @@ now says so in its own docstring.
 **Trigger.** Before this stage is run over untrusted documents at scale, unattended, or anywhere a
 300 MB spike per document matters. A per-process memory limit would be a cheaper mitigation than
 replacing the parser.
+
+## Upgrading `pyarrow` is a republication
+
+`pyarrow` is pinned exactly. `adapters/parquet.py` pins every writer option it can reach, but the
+parquet footer's `created_by` field carries pyarrow's own version string and cannot be set through
+the API. The published bytes are therefore byte-stable for a given pyarrow version and change on
+upgrade.
+
+Because publication is idempotent by content hash, bumping it rewrites every published parquet and
+produces a commit that changes no data, briefly making "a second apply is a no-op" false for
+reasons unrelated to the dataset. Treat an upgrade as a deliberate republication: bump it on its
+own, re-publish, and say so.
+
