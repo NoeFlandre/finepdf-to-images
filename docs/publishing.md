@@ -30,10 +30,21 @@ decides to publish it.
 | --- | --- |
 | `README.md` | the dataset card |
 | `manifest.json` | source, sampling, counts, policy, digests, encoder versions |
-| `data/documents.jsonl` | one row per **scored** document |
-| `data/images.jsonl` | one row per extracted image |
+| `data/documents.jsonl` | one row per **scored** document (`documents` config, `all` split) |
+| `data/documents_relevant.jsonl` | scored documents with `relevant == true` (`documents` config, `relevant` split) |
+| `data/documents_retrieved.jsonl` | scored documents with `retrieved == true` (`documents` config, `retrieved` split) |
+| `data/images.jsonl` | one row per extracted image (`images` config, `train` split) |
 
-**Every scored row is published, not only the retrieved ones.** A row judged irrelevant, or whose
+**Derived splits allow direct loading without client-side filtering.** The `documents` configuration
+declares three splits:
+- `all` (`data/documents.jsonl`): all scored documents from the sampled shard, preserving failures,
+  negatives, and unretrieved rows for auditing.
+- `relevant` (`data/documents_relevant.jsonl`): only documents meeting the relevance threshold
+  (`relevant == true`), loadable directly with `load_dataset(..., name="documents", split="relevant")`.
+- `retrieved` (`data/documents_retrieved.jsonl`): only documents whose source PDF was successfully
+  retrieved (`retrieved == true`), loadable directly with `load_dataset(..., name="documents", split="retrieved")`.
+
+**Every scored row is published in the `all` split, not only the retrieved ones.** A row judged irrelevant, or whose
 URL was refused, or whose server returned HTML, carries its `failure_reason`. A dataset that
 silently drops its failures cannot be used to reproduce the run or to argue with the scorer.
 
@@ -58,10 +69,11 @@ The schema tables are generated from `DOCUMENT_FIELDS` and `IMAGE_FIELDS`, and a
 documented field is actually emitted.
 
 The card's YAML front matter is a **machine-read contract**, not prose. Without explicit `configs:`
-declaring `documents` (`data/documents.jsonl`) and `images` (`data/images.jsonl`) as separate
-configurations, the Hub auto-detects `data/*` as a single split, attempts to concatenate files with
-incompatible schemas, and fails with `CastError` (disabling parquet conversion and the Dataset Viewer).
-A domain test asserts that the front matter parses as valid YAML and explicitly declares both configs.
+declaring `documents` (with its `all`, `relevant`, and `retrieved` splits) and `images`
+(`train` split) as separate configurations, the Hub auto-detects `data/*` as a single split,
+attempts to concatenate files with incompatible schemas, and fails with `CastError` (disabling
+parquet conversion and the Dataset Viewer). A domain test asserts that the front matter parses
+as valid YAML and explicitly declares both configs with their respective splits and data files.
 
 ## Idempotency
 
@@ -78,7 +90,7 @@ mismatch is reported and the command exits non-zero rather than claiming success
 
 The Hub reports a **git blob id** for an ordinary file and a content SHA-256 only for an LFS
 object, so the comparison accepts either identity. This matters more than it sounds: none of the
-four files published here is large enough to be an LFS object, so matching on SHA-256 alone meant
+six files published here is large enough to be an LFS object, so matching on SHA-256 alone meant
 nothing ever matched — every successful publication would have reported "verification FAILED" and
 exited 1, and a re-run would never have been recognised as a no-op. A file with neither identity is
 still treated as *not matching*, so a publication re-uploads rather than silently skipping

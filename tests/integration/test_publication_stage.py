@@ -16,6 +16,8 @@ from finepdf_to_images.adapters.hub import FakeHub, HubError
 from finepdf_to_images.domain.publication import (
     CARD_FILE,
     DOCUMENTS_FILE,
+    DOCUMENTS_RELEVANT_FILE,
+    DOCUMENTS_RETRIEVED_FILE,
     IMAGES_FILE,
     MANIFEST_FILE,
 )
@@ -75,6 +77,8 @@ def test_a_dry_run_reports_the_exact_files_and_counts() -> None:
         CARD_FILE,
         MANIFEST_FILE,
         DOCUMENTS_FILE,
+        DOCUMENTS_RELEVANT_FILE,
+        DOCUMENTS_RETRIEVED_FILE,
         IMAGES_FILE,
     ]
     assert result.plan.manifest["counts"]["documents"] == 2
@@ -104,7 +108,14 @@ def test_applying_uploads_every_file_in_one_commit() -> None:
     result = publish(hub, apply=True)
     assert result.applied is True
     assert result.ok
-    assert set(hub.files) == {CARD_FILE, MANIFEST_FILE, DOCUMENTS_FILE, IMAGES_FILE}
+    assert set(hub.files) == {
+        CARD_FILE,
+        MANIFEST_FILE,
+        DOCUMENTS_FILE,
+        DOCUMENTS_RELEVANT_FILE,
+        DOCUMENTS_RETRIEVED_FILE,
+        IMAGES_FILE,
+    }
     assert len(hub.commits) == 1, "a half-updated published state must not be possible"
     assert result.revision == hub.head
 
@@ -194,8 +205,17 @@ def test_publishing_an_empty_run_still_produces_a_coherent_dataset() -> None:
         apply=True,
     )
     assert result.plan.manifest["counts"]["documents"] == 0
-    assert set(hub.files) == {CARD_FILE, MANIFEST_FILE, DOCUMENTS_FILE, IMAGES_FILE}
+    assert set(hub.files) == {
+        CARD_FILE,
+        MANIFEST_FILE,
+        DOCUMENTS_FILE,
+        DOCUMENTS_RELEVANT_FILE,
+        DOCUMENTS_RETRIEVED_FILE,
+        IMAGES_FILE,
+    }
     assert hub.files[DOCUMENTS_FILE] == b""
+    assert hub.files[DOCUMENTS_RELEVANT_FILE] == b""
+    assert hub.files[DOCUMENTS_RETRIEVED_FILE] == b""
 
 
 # --------------------------------------------------------------------------- published content
@@ -204,11 +224,16 @@ def test_publishing_an_empty_run_still_produces_a_coherent_dataset() -> None:
 def test_the_published_rows_are_canonical_jsonl() -> None:
     hub = FakeHub()
     publish(hub, apply=True)
-    lines = hub.files[DOCUMENTS_FILE].decode().splitlines()
-    assert len(lines) == 2
-    for line in lines:
-        row = json.loads(line)
-        assert list(row) == sorted(row), "canonical JSON sorts its keys"
+    for path, expected_count in [
+        (DOCUMENTS_FILE, 2),
+        (DOCUMENTS_RELEVANT_FILE, 1),
+        (DOCUMENTS_RETRIEVED_FILE, 1),
+    ]:
+        lines = hub.files[path].decode().splitlines()
+        assert len(lines) == expected_count
+        for line in lines:
+            row = json.loads(line)
+            assert list(row) == sorted(row), f"canonical JSON sorts its keys: {path}"
 
 
 def test_the_published_manifest_is_readable_json_with_the_source_pinned() -> None:
@@ -412,8 +437,14 @@ def test_a_hub_that_reports_nothing_is_never_a_noop() -> None:
     hub = Silent()
     result = publish(hub, apply=True)
     assert result.noop is False
-    assert not result.ok, "unverifiable files must be reported, not assumed correct"
-    assert set(result.missing) == {CARD_FILE, MANIFEST_FILE, DOCUMENTS_FILE, IMAGES_FILE}
+    assert set(result.missing) == {
+        CARD_FILE,
+        MANIFEST_FILE,
+        DOCUMENTS_FILE,
+        DOCUMENTS_RELEVANT_FILE,
+        DOCUMENTS_RETRIEVED_FILE,
+        IMAGES_FILE,
+    }
 
 
 def test_cli_reports_a_hub_failure_as_a_diagnostic_not_a_traceback(

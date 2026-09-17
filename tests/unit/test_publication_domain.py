@@ -13,6 +13,8 @@ from finepdf_to_images.domain.publication import (
     CARD_FILE,
     DOCUMENT_FIELDS,
     DOCUMENTS_FILE,
+    DOCUMENTS_RELEVANT_FILE,
+    DOCUMENTS_RETRIEVED_FILE,
     IMAGE_FIELDS,
     IMAGES_FILE,
     MANIFEST_FILE,
@@ -23,6 +25,8 @@ from finepdf_to_images.domain.publication import (
     build_image_rows,
     build_manifest,
     build_plan,
+    derive_relevant_rows,
+    derive_retrieved_rows,
     is_noop,
     render_card,
 )
@@ -189,6 +193,16 @@ def test_the_manifest_records_source_sampling_and_counts() -> None:
         "images": 1,
         "unique_images": 1,
     }
+    assert manifest["splits"] == {
+        "documents": {
+            "all": 2,
+            "relevant": 1,
+            "retrieved": 1,
+        },
+        "images": {
+            "train": 1,
+        },
+    }
 
 
 def test_the_manifest_says_whether_source_bytes_are_republished() -> None:
@@ -214,13 +228,15 @@ def test_the_manifest_has_no_timestamp() -> None:
 # --------------------------------------------------------------------------- plan
 
 
-def test_a_plan_contains_exactly_the_four_published_files() -> None:
+def test_a_publication_has_the_expected_files() -> None:
     documents, images, manifest = assembled()
     plan = build_plan(repo="a/b", manifest=manifest, documents=documents, images=images)
     assert [file.path for file in plan.files] == [
         CARD_FILE,
         MANIFEST_FILE,
         DOCUMENTS_FILE,
+        DOCUMENTS_RELEVANT_FILE,
+        DOCUMENTS_RETRIEVED_FILE,
         IMAGES_FILE,
     ]
     assert all(file.size > 0 for file in plan.files)
@@ -259,7 +275,17 @@ def test_a_publication_is_a_noop_when_every_file_already_matches() -> None:
     assert is_noop(plan, remote)
 
 
-@pytest.mark.parametrize("missing", [CARD_FILE, MANIFEST_FILE, DOCUMENTS_FILE, IMAGES_FILE])
+@pytest.mark.parametrize(
+    "missing",
+    [
+        CARD_FILE,
+        MANIFEST_FILE,
+        DOCUMENTS_FILE,
+        DOCUMENTS_RELEVANT_FILE,
+        DOCUMENTS_RETRIEVED_FILE,
+        IMAGES_FILE,
+    ],
+)
 def test_one_missing_or_changed_file_is_not_a_noop(missing: str) -> None:
     documents, images, manifest = assembled()
     plan = build_plan(repo="a/b", manifest=manifest, documents=documents, images=images)
@@ -339,10 +365,19 @@ def test_the_card_has_valid_yaml_front_matter() -> None:
     assert isinstance(meta, dict)
     assert meta["license"] == "odc-by"
     assert meta["configs"] == [
-        {"config_name": "documents", "data_files": "data/documents.jsonl"},
+        {
+            "config_name": "documents",
+            "data_files": [
+                {"split": "all", "path": "data/documents.jsonl"},
+                {"split": "relevant", "path": "data/documents_relevant.jsonl"},
+                {"split": "retrieved", "path": "data/documents_retrieved.jsonl"},
+            ],
+        },
         {"config_name": "images", "data_files": "data/images.jsonl"},
     ]
     assert DOCUMENTS_FILE == "data/documents.jsonl"
+    assert DOCUMENTS_RELEVANT_FILE == "data/documents_relevant.jsonl"
+    assert DOCUMENTS_RETRIEVED_FILE == "data/documents_retrieved.jsonl"
     assert IMAGES_FILE == "data/images.jsonl"
 
 
@@ -385,6 +420,8 @@ def test_a_plan_never_contains_source_bytes(count: int) -> None:
         CARD_FILE,
         MANIFEST_FILE,
         DOCUMENTS_FILE,
+        DOCUMENTS_RELEVANT_FILE,
+        DOCUMENTS_RETRIEVED_FILE,
         IMAGES_FILE,
     }
     assert not manifest["publishes_source_bytes"]
@@ -526,3 +563,45 @@ def test_the_card_states_odc_by_attribution_obligation_for_text() -> None:
     assert "ODC-BY" in card
     assert "HuggingFaceFW/finepdfs" in card
     assert "text" in card.lower()
+
+
+@given(
+    rows=st.lists(
+        st.fixed_dictionaries(
+            {
+                "row_index": st.integers(min_value=0, max_value=1000),
+                "row_id": st.text(min_size=1, max_size=20),
+                "relevant": st.booleans(),
+                "retrieved": st.booleans(),
+            }
+        ),
+        max_size=30,
+    )
+)
+def test_derived_splits_are_subsets_and_match_predicates(rows: list[dict[str, Any]]) -> None:
+    docs = sorted(rows, key=lambda r: (r["row_index"] is None, r["row_index"]))
+    relevant = derive_relevant_rows(docs)
+    retrieved = derive_retrieved_rows(docs)
+
+    assert len(relevant) <= len(docs)
+    assert len(retrieved) <= len(docs)
+    assert all(r in docs for r in relevant)
+    assert all(r in docs for r in retrieved)
+
+    assert all(r["relevant"] is True for r in relevant)
+    assert len(relevant) == sum(1 for r in docs if r["relevant"])
+    assert [r["row_id"] for r in relevant] == [r["row_id"] for r in docs if r["relevant"]]
+
+    assert all(r["retrieved"] is True for r in retrieved)
+    assert len(retrieved) == sum(1 for r in docs if r["retrieved"])
+    assert [r["row_id"] for r in retrieved] == [r["row_id"] for r in docs if r["retrieved"]]
+
+
+def test_the_card_documents_splits_and_files() -> None:
+    _, _, manifest = assembled()
+    card = render_card(manifest)
+    assert DOCUMENTS_RELEVANT_FILE in card
+    assert DOCUMENTS_RETRIEVED_FILE in card
+    assert "split: `all`" in card or "split `all`" in card or "`all`" in card
+    assert "split: `relevant`" in card or "split `relevant`" in card or "`relevant`" in card
+    assert "split: `retrieved`" in card or "split `retrieved`" in card or "`retrieved`" in card

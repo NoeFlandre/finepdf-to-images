@@ -38,6 +38,8 @@ _REPO_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,94}/[A-Za-z0-9][A-Za-z0-9.
 
 #: Files a publication always writes, in upload order.
 DOCUMENTS_FILE = "data/documents.jsonl"
+DOCUMENTS_RELEVANT_FILE = "data/documents_relevant.jsonl"
+DOCUMENTS_RETRIEVED_FILE = "data/documents_retrieved.jsonl"
 IMAGES_FILE = "data/images.jsonl"
 MANIFEST_FILE = "manifest.json"
 CARD_FILE = "README.md"
@@ -228,6 +230,16 @@ def _number(row: Mapping[str, Any], key: str) -> int:
     return int(value) if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
+def derive_relevant_rows(documents: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The subset of documents judged relevant by the scorer, in shard order."""
+    return [dict(row) for row in documents if bool(row.get("relevant"))]
+
+
+def derive_retrieved_rows(documents: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The subset of documents whose source PDF was successfully retrieved, in shard order."""
+    return [dict(row) for row in documents if bool(row.get("retrieved"))]
+
+
 def build_image_rows(images: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """The image index, reduced to the published fields and stably ordered."""
     rows = [
@@ -264,6 +276,8 @@ def build_manifest(
     Carries no timestamp: two publications of the same pilot output must produce the same bytes,
     or the idempotency claim is decided by the clock rather than by the data.
     """
+    relevant_docs = derive_relevant_rows(documents)
+    retrieved_docs = derive_retrieved_rows(documents)
     return {
         "schema_version": SCHEMA_VERSION,
         "source": dict(source),
@@ -271,11 +285,23 @@ def build_manifest(
         "vocabulary_version": vocabulary_version,
         "encoder": dict(encoder or {}),
         "counts": _counts(documents, images),
+        "splits": {
+            "documents": {
+                "all": len(documents),
+                "relevant": len(relevant_docs),
+                "retrieved": len(retrieved_docs),
+            },
+            "images": {
+                "train": len(images),
+            },
+        },
         "publishes_source_bytes": any(
             row.get("disposition") == "publish-artifact" for row in documents
         ),
         "policy": policy.policy_summary(),
         "documents_digest": content_digest(list(documents)),
+        "documents_relevant_digest": content_digest(relevant_docs),
+        "documents_retrieved_digest": content_digest(retrieved_docs),
         "images_digest": content_digest(list(images)),
     }
 
@@ -326,11 +352,15 @@ def build_plan(
     _validate_repo(repo)
     _check_no_byte_publication(documents)
     _check_text_byte_cap(documents)
+    relevant_docs = derive_relevant_rows(documents)
+    retrieved_docs = derive_retrieved_rows(documents)
     card = render_card(manifest)
     files = (
         PublishFile(CARD_FILE, card.encode("utf-8")),
         PublishFile(MANIFEST_FILE, canonical_bytes(manifest) + b"\n"),
         PublishFile(DOCUMENTS_FILE, _jsonl(documents)),
+        PublishFile(DOCUMENTS_RELEVANT_FILE, _jsonl(relevant_docs)),
+        PublishFile(DOCUMENTS_RETRIEVED_FILE, _jsonl(retrieved_docs)),
         PublishFile(IMAGES_FILE, _jsonl(images)),
     )
     return PublicationPlan(repo=repo, files=files, manifest=manifest)
@@ -380,7 +410,13 @@ def render_card(manifest: Mapping[str, Any]) -> str:
     return f"""---
 configs:
   - config_name: documents
-    data_files: {DOCUMENTS_FILE}
+    data_files:
+      - split: all
+        path: {DOCUMENTS_FILE}
+      - split: relevant
+        path: {DOCUMENTS_RELEVANT_FILE}
+      - split: retrieved
+        path: {DOCUMENTS_RETRIEVED_FILE}
   - config_name: images
     data_files: {IMAGES_FILE}
 license: odc-by
@@ -426,12 +462,23 @@ limit requires — never the shard, never the corpus.
 | image references | {counts["images"]} |
 | unique images | {counts["unique_images"]} |
 
+## Splits
+
+| config | split | count | description |
+| --- | --- | --- | --- |
+| `documents` | `all` | {counts["documents"]} | all scored documents from source shard |
+| `documents` | `relevant` | {counts["relevant"]} | scored documents judged relevant |
+| `documents` | `retrieved` | {counts["retrieved"]} | documents with retrieved source PDF |
+| `images` | `train` | {counts["images"]} | extracted images ({counts["unique_images"]} unique) |
+
 ## Files
 
 | path | contents |
 | --- | --- |
 | `{MANIFEST_FILE}` | run manifest: source, sampling, counts, policy, digests |
-| `{DOCUMENTS_FILE}` | one row per scored document |
+| `{DOCUMENTS_FILE}` | one row per scored document (split: `all`) |
+| `{DOCUMENTS_RELEVANT_FILE}` | documents judged relevant to agriculture (split: `relevant`) |
+| `{DOCUMENTS_RETRIEVED_FILE}` | documents whose source PDF was retrieved (split: `retrieved`) |
 | `{IMAGES_FILE}` | one row per extracted image |
 
 Digests: documents `{manifest["documents_digest"][:16]}…`, images

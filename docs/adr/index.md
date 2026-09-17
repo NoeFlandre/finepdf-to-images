@@ -17,3 +17,4 @@ us, including what it makes harder).
 - [ADR-0009 — Publish an index, not a document dump](0009-publish-metadata-not-documents.md)
 - [ADR-0010 — Declare explicit dataset configs in the card front matter](0010-dataset-viewer-configs.md)
 - [ADR-0011 — Publish extracted document text under ODC-BY](0011-publish-extracted-text.md)
+- [ADR-0012 — Derived relevant and retrieved splits for documents](0012-relevant-retrieved-splits.md)
