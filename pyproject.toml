@@ -31,7 +31,11 @@ packages = ["src/finepdf_to_images"]
 docs = ["mkdocs>=1.6"]
 dev = [
     "hypothesis>=6.100",
+    "mutmut>=3",
     "pytest>=8.3",
+    "pytest-bdd>=8",
+    "pytest-cov>=6",
+    "radon>=6",
     "ruff>=0.14",
     "ty>=0.0.1a10",
 ]
@@ -60,13 +64,39 @@ ban-relative-imports = "parents"
 [tool.ty.environment]
 root = ["./src", "."]
 
+[tool.coverage.run]
+branch = true
+source = ["src/finepdf_to_images"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = ["if TYPE_CHECKING:", "\\.\\.\\.$"]
+
+# Mutation testing targets the pure domain only. That is where the decisions live -- what counts as
+# relevant, what may be published, what a safe URL is -- and it is the code a surviving mutant says
+# something real about. Mutating an adapter mostly produces mutants that only a network could kill.
+[tool.mutmut]
+source_paths = ["src"]
+do_not_mutate = [
+    "*/adapters/*",
+    "*/cli.py",
+    "*/pipeline.py",
+    "*/__main__.py",
+    "*/__init__.py",
+]
+# Unit *and* integration: several domain decisions are only exercised end to end, and a
+# mutant that survives because the covering test was out of scope says nothing true.
+pytest_add_cli_args_test_selection = ["tests/unit", "tests/integration"]
+also_copy = ["tests", "pyproject.toml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers --strict-config"
-pythonpath = ["."]
+pythonpath = [".", "src"]
 markers = [
     "acceptance: end-to-end acceptance scenarios",
     "integration: tests crossing an I/O adapter boundary with local fixtures",
     "architecture: import-boundary and structural checks",
+    "property: Hypothesis property-based tests",
 ]
 

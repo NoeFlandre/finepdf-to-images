@@ -272,6 +272,7 @@ def test_round_trip_rejects_an_unknown_enum_value() -> None:
 # --------------------------------------------------------------------------- the core property
 
 
+@pytest.mark.property
 @given(
     status=st.sampled_from(list(LicenseStatus)),
     evidence=st.sampled_from(list(EvidenceSource)),
@@ -293,6 +294,7 @@ def test_bytes_are_published_only_when_all_three_conditions_hold(
     assert decision.publishes_bytes is expected
 
 
+@pytest.mark.property
 @given(
     status=st.sampled_from(list(LicenseStatus)),
     evidence=st.sampled_from(list(EvidenceSource)),
@@ -309,6 +311,7 @@ def test_incomplete_provenance_never_publishes_anything(
     assert decision.disposition is Disposition.EXCLUDE
 
 
+@pytest.mark.property
 @given(
     status=st.sampled_from([s for s in LicenseStatus if s is not LicenseStatus.DECLARED_OPEN]),
     evidence=st.sampled_from(list(EvidenceSource)),

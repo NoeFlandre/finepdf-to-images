@@ -67,12 +67,7 @@ def _read_bounded(open_file: Any, *, max_rows: int, columns: Sequence[str]) -> S
 
     parquet = pq.ParquetFile(open_file)
     metadata = parquet.metadata
-    available = {parquet.schema_arrow.field(i).name for i in range(len(parquet.schema_arrow))}
-    missing = [column for column in columns if column not in available]
-    if missing:
-        raise SourceConfigurationError(
-            f"shard is missing expected columns {missing}; refusing to guess at its schema"
-        )
+    _require_columns(parquet, columns)
 
     rows: list[dict[str, Any]] = []
     rows_per_row_group = metadata.row_group(0).num_rows if metadata.num_row_groups else 0
@@ -92,6 +87,16 @@ def _read_bounded(open_file: Any, *, max_rows: int, columns: Sequence[str]) -> S
         total_rows=metadata.num_rows,
         total_row_groups=metadata.num_row_groups,
     )
+
+
+def _require_columns(parquet: Any, columns: Sequence[str]) -> None:
+    """Refuse a shard whose schema is not the one we expect, rather than guessing at it."""
+    available = {parquet.schema_arrow.field(i).name for i in range(len(parquet.schema_arrow))}
+    missing = [column for column in columns if column not in available]
+    if missing:
+        raise SourceConfigurationError(
+            f"shard is missing expected columns {missing}; refusing to guess at its schema"
+        )
 
 
 class HuggingFaceShardReader:

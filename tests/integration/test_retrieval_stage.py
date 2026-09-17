@@ -490,3 +490,112 @@ def test_cli_rejects_a_manifest_without_a_source_block(
     )
     assert code == EXIT_FAILURE
     assert "no usable 'source' block" in capsys.readouterr().err
+
+
+def test_cli_retrieve_runs_end_to_end_without_a_network(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The retrieve command is the composition root for the riskiest stage. Leaving it untested
+    because it is "just wiring" is how wiring bugs reach production."""
+    from finepdf_to_images import cli
+
+    url = "https://fixtures.invalid/a.pdf"
+    transport = FixtureTransport(responses={url: pdf_response()})
+    monkeypatch.setattr(cli, "TRANSPORT_FACTORY", lambda: transport)
+
+    select_manifest = tmp_path / "select.json"
+    select_manifest.write_text(json.dumps({"stage": "select", "source": SOURCE}), encoding="utf-8")
+    scored = tmp_path / "scored.jsonl"
+    scored.write_text(
+        json.dumps({**row(0, url), "relevance": {"relevant": True}})
+        + "\n"
+        + json.dumps(
+            {**row(1, "https://fixtures.invalid/skip.pdf"), "relevance": {"relevant": False}}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        run_cli(
+            [
+                "retrieve",
+                "--scored",
+                str(scored),
+                "--select-manifest",
+                str(select_manifest),
+                "--relevant-only",
+                "--out",
+                str(tmp_path / "out"),
+            ]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "attempted  1" in out
+    assert "retrieved  1" in out
+    assert transport.requested == [url], "an irrelevant row must not be fetched"
+
+
+def test_cli_retrieve_without_relevant_only_fetches_every_row(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from finepdf_to_images import cli
+
+    urls = ["https://fixtures.invalid/a.pdf", "https://fixtures.invalid/b.pdf"]
+    transport = FixtureTransport(responses={url: pdf_response() for url in urls})
+    monkeypatch.setattr(cli, "TRANSPORT_FACTORY", lambda: transport)
+
+    select_manifest = tmp_path / "select.json"
+    select_manifest.write_text(json.dumps({"stage": "select", "source": SOURCE}), encoding="utf-8")
+    scored = tmp_path / "scored.jsonl"
+    scored.write_text(
+        "\n".join(
+            json.dumps({**row(i, url), "relevance": {"relevant": False}})
+            for i, url in enumerate(urls)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        run_cli(
+            [
+                "retrieve",
+                "--scored",
+                str(scored),
+                "--select-manifest",
+                str(select_manifest),
+                "--out",
+                str(tmp_path / "out"),
+            ]
+        )
+        == 0
+    )
+    assert "attempted  2" in capsys.readouterr().out
+    assert len(transport.requested) == 2
+
+
+def test_cli_retrieve_reports_failure_counts_by_reason(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from finepdf_to_images import cli
+
+    monkeypatch.setattr(cli, "TRANSPORT_FACTORY", lambda: FixtureTransport(responses={}))
+    select_manifest = tmp_path / "select.json"
+    select_manifest.write_text(json.dumps({"stage": "select", "source": SOURCE}), encoding="utf-8")
+    scored = tmp_path / "scored.jsonl"
+    scored.write_text(json.dumps(row(0, "ftp://x.invalid/a.pdf")) + "\n", encoding="utf-8")
+
+    run_cli(
+        [
+            "retrieve",
+            "--scored",
+            str(scored),
+            "--select-manifest",
+            str(select_manifest),
+            "--out",
+            str(tmp_path / "out"),
+        ]
+    )
+    assert "unsafe-url" in capsys.readouterr().out

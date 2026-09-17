@@ -216,16 +216,24 @@ def missing_provenance(
 
 def _is_usable(field: str, value: Any) -> bool:
     if field in _INTEGER_FIELDS:
-        # bool is an int subclass; True as a row index is a bug, not a row.
-        return isinstance(value, int) and not isinstance(value, bool) and value >= 0
-    if not isinstance(value, str) or not value or value != value.strip():
-        # Surrounding whitespace is rejected rather than trimmed: these are identifiers and URLs,
-        # and the allow list already refuses " CC-BY-4.0 ", so accepting padding here would make
-        # the module inconsistent about whether padding matters.
+        return _is_whole_number(value)
+    if not _is_clean_text(value):
         return False
-    if field in _DIGEST_FIELDS:
-        return bool(_DIGEST_RE.fullmatch(value))
-    return True
+    return bool(_DIGEST_RE.fullmatch(value)) if field in _DIGEST_FIELDS else True
+
+
+def _is_whole_number(value: Any) -> bool:
+    """bool is an int subclass; ``True`` as a row index is a bug, not a row."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _is_clean_text(value: Any) -> bool:
+    """Non-empty text with no surrounding whitespace.
+
+    Padding is rejected rather than trimmed: the allow list already refuses " CC-BY-4.0 ", so
+    accepting it here would make the module inconsistent about whether padding matters.
+    """
+    return isinstance(value, str) and bool(value) and value == value.strip()
 
 
 def decide(
@@ -268,41 +276,40 @@ def decide(
             license=declaration,
         )
 
-    if declaration.status is not LicenseStatus.DECLARED_OPEN:
+    refusal = _refusal_reason(declaration, allowed_licenses)
+    if refusal:
         return PublicationDecision(
-            disposition=Disposition.METADATA_ONLY,
-            reason=(
-                f"redistribution not established (status {declaration.status}); "
-                "publishing provenance and hashes only"
-            ),
-            license=declaration,
+            disposition=Disposition.METADATA_ONLY, reason=refusal, license=declaration
         )
-
-    if declaration.evidence not in TRUSTED_EVIDENCE:
-        return PublicationDecision(
-            disposition=Disposition.METADATA_ONLY,
-            reason=(
-                f"licence claim rests on {declaration.evidence}, which is not trusted evidence "
-                "for redistribution; publishing provenance and hashes only"
-            ),
-            license=declaration,
-        )
-
-    if declaration.identifier not in allowed_licenses:
-        return PublicationDecision(
-            disposition=Disposition.METADATA_ONLY,
-            reason=(
-                f"licence {declaration.identifier!r} is not on this project's allow list; "
-                "publishing provenance and hashes only"
-            ),
-            license=declaration,
-        )
-
     return PublicationDecision(
         disposition=Disposition.PUBLISH_ARTIFACT,
         reason=f"{declaration.identifier} confirmed by {declaration.evidence}",
         license=declaration,
     )
+
+
+def _refusal_reason(declaration: LicenseDeclaration, allowed_licenses: AbstractSet[str]) -> str:
+    """Why these bytes may not be republished, or an empty string if they may.
+
+    All three conditions, together. There is no ordering here that lets one compensate for
+    another, which is the property the tests assert over the whole cross-product.
+    """
+    if declaration.status is not LicenseStatus.DECLARED_OPEN:
+        return (
+            f"redistribution not established (status {declaration.status}); "
+            "publishing provenance and hashes only"
+        )
+    if declaration.evidence not in TRUSTED_EVIDENCE:
+        return (
+            f"licence claim rests on {declaration.evidence}, which is not trusted evidence "
+            "for redistribution; publishing provenance and hashes only"
+        )
+    if declaration.identifier not in allowed_licenses:
+        return (
+            f"licence {declaration.identifier!r} is not on this project's allow list; "
+            "publishing provenance and hashes only"
+        )
+    return ""
 
 
 def policy_summary() -> dict[str, Any]:

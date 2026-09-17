@@ -196,6 +196,7 @@ def test_hash_strategy_replays_identically_from_the_same_seed() -> None:
     assert select(records, spec) == select(records, spec)
 
 
+@pytest.mark.property
 @given(
     count=st.integers(min_value=0, max_value=60),
     limit=st.integers(min_value=1, max_value=60),
