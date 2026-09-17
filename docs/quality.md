@@ -53,6 +53,27 @@ An AST walk over `src/`. The domain must not import a network, filesystem, PDF o
 not import an adapter or the CLI, and the package must stay acyclic. The analyser carries its own
 regression tests, because an earlier version of it silently matched nothing.
 
+### Complexity: one limit, two gates
+
+**Maximum cyclomatic complexity is 6**, and both gates enforce it:
+
+- **Ruff** (`mccabe.max-complexity = 6`) caps raw complexity. It is fast and runs in the editor,
+  so it is where a too-branchy function should be caught.
+- **CRAP** caps complexity *weighted by how well it is tested*. At full coverage CRAP equals the
+  raw complexity, so the same 6 applies; below full coverage the ceiling drops sharply.
+
+The two used to disagree — ruff allowed 8 while CRAP rejected 7 at full coverage — which made
+ruff's limit unreachable and meant the slower gate always fired first, in CI rather than locally.
+
+6 was kept rather than raised. All 203 functions in `src/` already meet it, so raising the limit
+would have relaxed a standard that is being met, to avoid the occasional forced split. Functions
+whose branching *is* their specification — `policy.decide`, `retrieval.evaluate` — sit at exactly
+6 and are not exempt: when one of them next needs a seventh branch, that is a prompt to look at
+whether the rule itself has grown, not to raise the number.
+
+`scripts/crap.py` reports which functions are within one branch of the line, so a cluster coming
+to rest on the threshold is visible before it blocks an unrelated change.
+
 ### CRAP
 
 ```

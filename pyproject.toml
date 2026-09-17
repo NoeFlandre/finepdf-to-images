@@ -59,7 +59,7 @@ extend-exclude = [".claude"]
 select = ["E", "F", "I", "UP", "B", "SIM", "C90", "RUF", "ARG", "PTH", "TID"]
 
 [tool.ruff.lint.mccabe]
-max-complexity = 8
+max-complexity = 6
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "parents"
