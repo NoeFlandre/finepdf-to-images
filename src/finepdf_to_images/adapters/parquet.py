@@ -38,10 +38,10 @@ _WRITER_OPTIONS: Mapping[str, Any] = {
 def _schema() -> Any:
     """The published schema.
 
-    ``images`` is a list of ``{bytes, path}`` structs because that is what the Hub's ``Image``
-    feature decodes. Declaring it any other way makes the viewer render a struct instead of a
-    picture, which is the entire point of embedding the images rather than publishing them as
-    loose files.
+    ``image`` is a single ``{bytes, path}`` struct, which is what the Hub's ``Image`` feature
+    decodes. It is scalar rather than a list on purpose: `datasets-server` types a list of images
+    correctly, but the viewer renders that column as JSON instead of pictures, so the dataset's
+    point was invisible to anyone browsing it. A scalar column renders as a thumbnail.
     """
     import pyarrow as pa
 
@@ -49,8 +49,8 @@ def _schema() -> Any:
     return pa.schema(
         [
             pa.field("pdf_url", pa.string()),
+            pa.field("image", image),
             pa.field("text", pa.string()),
-            pa.field("images", pa.list_(image)),
             pa.field("matched_terms", pa.list_(pa.string())),
         ]
     )

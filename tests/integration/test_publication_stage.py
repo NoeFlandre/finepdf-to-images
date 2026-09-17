@@ -233,7 +233,7 @@ def test_the_published_table_has_exactly_the_four_reader_facing_columns() -> Non
     hub = FakeHub()
     publish(hub, apply=True)
     rows = _published_rows(hub)
-    assert [list(row) for row in rows] == [["pdf_url", "text", "images", "matched_terms"]]
+    assert [list(row) for row in rows] == [["pdf_url", "image", "text", "matched_terms"]]
 
 
 def test_only_relevant_documents_are_published() -> None:
@@ -583,7 +583,7 @@ def test_a_cleared_run_embeds_the_image_and_republishes_no_loose_files(
 
     assert set(hub.files) == {CARD_FILE, DATASET_FILE}
     assert not result.missing
-    assert _published_rows(hub)[0]["images"][0]["bytes"] == b"\x89PNG\r\n\x1a\npixels"
+    assert _published_rows(hub)[0]["image"]["bytes"] == b"\x89PNG\r\n\x1a\npixels"
 
 
 def test_the_published_row_points_at_the_bytes_that_shipped(tmp_path: pathlib.Path) -> None:
@@ -597,9 +597,8 @@ def test_the_published_row_points_at_the_bytes_that_shipped(tmp_path: pathlib.Pa
 
     dataset = next(file for file in result.plan.files if file.path == DATASET_FILE)
     rows = pq.read_table(io.BytesIO(dataset.data)).to_pylist()
-    embedded = rows[0]["images"]
-    assert embedded, "a cleared image must be embedded in the row, not merely referenced"
-    assert embedded[0]["bytes"] == b"\x89PNG\r\n\x1a\npixels"
+    assert rows, "a cleared image must be embedded in a row, not merely referenced"
+    assert rows[0]["image"]["bytes"] == b"\x89PNG\r\n\x1a\npixels"
 
 
 def test_bytes_that_disagree_with_the_index_are_refused(tmp_path: pathlib.Path) -> None:
@@ -794,17 +793,17 @@ def test_a_document_with_no_images_is_not_published() -> None:
     )
     assert result.plan.manifest["counts"]["relevant"] == 2
     rows = _published_rows(hub)
-    assert len(rows) == 1, "the document without an image must not be published"
-    assert rows[0]["images"], "every published row carries at least one image"
+    assert len(rows) == 1, "the document without an image contributes no rows"
+    assert rows[0]["image"], "every published row carries its picture"
 
 
-def test_no_published_row_ever_has_an_empty_image_list() -> None:
-    """The invariant the filter buys: a reader never meets a row that shows nothing."""
+def test_every_published_row_carries_an_image() -> None:
+    """The invariant the shape buys: a reader never meets a row that shows nothing."""
     hub = FakeHub()
     publish(hub, apply=True, documents=5)
     rows = _published_rows(hub)
     assert rows
-    assert all(row["images"] for row in rows)
+    assert all(row["image"] and row["image"]["bytes"] for row in rows)
 
 
 def test_an_image_from_an_uncleared_source_is_still_published() -> None:
@@ -816,8 +815,7 @@ def test_an_image_from_an_uncleared_source_is_still_published() -> None:
     """
     hub = FakeHub()
     publish(hub, apply=True)
-    row = _published_rows(hub)[0]
-    assert row["images"][0]["bytes"] == b"img-0-0-0"
+    assert _published_rows(hub)[0]["image"]["bytes"] == b"img-0-0-0"
 
 
 def test_the_card_states_the_images_are_not_licence_cleared_and_gives_a_takedown_route() -> None:
@@ -871,7 +869,7 @@ def test_the_card_reports_the_published_row_count_not_the_relevant_count() -> No
 
     assert result.plan.manifest["counts"]["relevant"] == 2
     assert published == 1, "fixture must exercise the gap between relevant and published"
-    assert "1 document, each carrying at least one image" in card
+    assert "One row per image: 1 image" in card
     assert "52 of 1000" not in card
 
 
@@ -891,5 +889,62 @@ def test_the_card_uses_a_singular_noun_for_a_single_row() -> None:
     hub = FakeHub()
     publish(hub, apply=True)
     card = hub.files[CARD_FILE].decode()
-    assert "1 document, each carrying" in card
-    assert "1 documents" not in card
+    assert "1 image extracted" in card
+    assert "1 images" not in card
+
+
+def test_the_image_column_is_scalar_so_the_viewer_renders_it() -> None:
+    """REGRESSION: a list-of-images column displayed as raw JSON in the viewer.
+
+    `datasets-server` typed it correctly as List(Image) and served every asset, so the data was
+    never wrong -- but the viewer renders a list column as JSON and only renders a *scalar* Image
+    as a picture. The headline feature of a dataset called finepdf-to-images was invisible to
+    anyone who had not written code against it.
+
+    Asserted on the parquet schema rather than the values, because the schema is what the Hub
+    reads to decide how to display the column.
+    """
+    import io
+
+    import pyarrow.parquet as pq
+
+    hub = FakeHub()
+    publish(hub, apply=True)
+    schema = pq.read_schema(io.BytesIO(hub.files[DATASET_FILE]))
+
+    import pyarrow as pa
+
+    field_type = schema.field("image").type
+    assert pa.types.is_struct(field_type), "image is a scalar {bytes, path} struct, never a list"
+    assert {sub.name for sub in field_type} == {"bytes", "path"}
+    assert "images" not in schema.names, "the list column must be gone, not merely supplemented"
+
+
+def test_a_document_contributes_one_row_per_image() -> None:
+    """The shape change: rows are images now, and a document's context repeats across them."""
+    hub = FakeHub()
+    images = [image_row(0, page=page) for page in range(3)]
+    root = pathlib.Path(tempfile.mkdtemp(prefix="finepdf-multi-"))
+    for index, image in enumerate(images):
+        data = f"page-{index}".encode()
+        image["sha256"] = sha256_hex(data)
+        target = root / image_path(image["sha256"], "image/png")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
+    run_publish(
+        hub=hub,
+        repo="a/b",
+        select_manifest=SELECT_MANIFEST,
+        scored=[scored_row(0, relevant=True)],
+        retrieved=[retrieved_row(0)],
+        documents=[document_row(0)],
+        images=images,
+        extract_manifest=EXTRACT_MANIFEST,
+        image_root=root,
+        apply=True,
+    )
+    rows = _published_rows(hub)
+    assert len(rows) == 3, "one document, three images, three rows"
+    assert len({row["pdf_url"] for row in rows}) == 1, "the document's url repeats"
+    assert len({row["text"] for row in rows}) == 1, "its text repeats, so each row stands alone"

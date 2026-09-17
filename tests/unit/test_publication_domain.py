@@ -1168,8 +1168,8 @@ def test_the_same_image_on_several_pages_is_embedded_once() -> None:
     for image in repeated:
         image["sha256"] = sha256_hex(b"same")
     rows = build_dataset_rows(_one_relevant_document(), repeated, {sha256_hex(b"same"): b"same"})
-    assert len(rows) == 1
-    assert len(rows[0]["images"]) == 1, "one digest, one embedded image"
+    assert len(rows) == 1, "one digest, one row -- the same picture is not repeated"
+    assert rows[0]["image"]["bytes"] == b"same"
 
 
 def test_an_image_whose_bytes_are_unavailable_drops_the_document() -> None:
@@ -1186,4 +1186,4 @@ def test_images_are_embedded_in_page_order() -> None:
     images = [image_row(0, page=2), image_row(0, page=0), image_row(0, page=1)]
     available = {image["sha256"]: f"page-{index}".encode() for index, image in enumerate(images)}
     rows = build_dataset_rows(_one_relevant_document(), images, available)
-    assert [entry["bytes"] for entry in rows[0]["images"]] == [b"page-1", b"page-2", b"page-0"]
+    assert [row["image"]["bytes"] for row in rows] == [b"page-1", b"page-2", b"page-0"]

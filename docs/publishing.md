@@ -114,6 +114,16 @@ a smaller plan. Once a publication also deletes, that same forgotten flag remove
 bytes from a public dataset. Publishing metadata only is expressed by clearing nothing, not by
 leaving out an argument.
 
+## One row per image
+
+The published table is one row per image, not per document: a document with three images yields
+three rows, each repeating its `pdf_url`, `text` and `matched_terms`.
+
+That shape exists because the Hub's viewer renders a scalar `Image` column as a thumbnail but
+renders a *list* of images as JSON — so the list shape left the pictures invisible to anyone
+browsing the dataset. See [ADR-0016](adr/0016-one-row-per-image.md). Parquet's dictionary encoding
+makes the repeated text almost free: 31 MB of logical duplication cost about 90 KB on the pilot.
+
 ## Only rows that carry an image
 
 A document with no embeddable image is not published. This is `finepdf-to-images`: a row with no
