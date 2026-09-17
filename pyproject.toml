@@ -67,8 +67,12 @@ ban-relative-imports = "parents"
 
 [tool.ty.environment]
 root = ["./src", "."]
+
 # Agent worktrees are checkouts of this repository placed inside it; type-checking them means
-# type-checking another branch. Ruff excludes them for the same reason.
+# type-checking another branch. Ruff excludes them for the same reason. File selection lives
+# under `src`, not `environment` -- ty rejects an unknown key outright rather than ignoring it,
+# so putting it in the wrong table failed the gate on every run.
+[tool.ty.src]
 exclude = [".claude"]
 
 [tool.coverage.run]
