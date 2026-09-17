@@ -15,6 +15,12 @@ The threshold is deliberately strict (6). At full coverage a function may be as 
 80% coverage the ceiling is about 3. That is a design constraint, not a target to be gamed: raising
 coverage on a monster to get under the line is exactly the move the number exists to discourage,
 and a reviewer should read the complexity column too.
+
+Ruff's ``mccabe.max-complexity`` is set to the same 6, so the two gates state one policy rather
+than two. They previously disagreed -- ruff allowed 8 while this gate rejected anything above 6 at
+full coverage -- which made ruff's limit unreachable: no function could reach 7 without failing
+here first. The fast, in-editor check now fires first, with a clearer message, and this gate keeps
+its real job of catching complexity that is *not* covered.
 """
 
 from __future__ import annotations
@@ -146,6 +152,45 @@ def _matching_key(path: pathlib.Path, hits: dict[str, dict[int, int]], root: pat
     )
 
 
+def _report_unmeasured(unmeasured: list[Score]) -> None:
+    print(
+        f"{len(unmeasured)} function(s) have no coverage data at all. The report is stale or "
+        "was produced from a different tree; re-run pytest --cov.",
+        file=sys.stderr,
+    )
+    for score in unmeasured[:10]:
+        print(f"  {score.module}:{score.line} {score.name}", file=sys.stderr)
+
+
+def _report_over(over: list[Score]) -> None:
+    print(f"{len(over)} over threshold:", file=sys.stderr)
+    for score in over:
+        print(
+            f"  {score.crap:.2f}  {score.module}:{score.line} {score.name} "
+            f"(complexity {score.complexity}, coverage {score.coverage:.1%})",
+            file=sys.stderr,
+        )
+
+
+def _report_headroom(worst: list[Score], threshold: float) -> None:
+    """Say how close the worst passing functions are to the line.
+
+    A gate that only speaks when it fails hides the moment a whole cluster of functions comes to
+    rest exactly on the threshold -- which is what happened here, and it turns the next one-branch
+    change into an unrelated refactor. Naming the margin makes that visible before it bites.
+    """
+    # Within one branch of the line. An exact float equality would miss a function at 5.99 that
+    # is just as stuck, and "how much room is left" is the question worth answering.
+    tight = [score for score in worst if threshold - score.crap < 1.0]
+    if tight:
+        print(
+            f"note: {len(tight)} function(s) are within one branch of the threshold "
+            f"({threshold}); the next added branch fails the gate:"
+        )
+        for score in tight[:5]:
+            print(f"  {score.crap:>6.2f}  {score.module}:{score.line} {score.name}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD)
@@ -163,13 +208,7 @@ def main(argv: list[str] | None = None) -> int:
     worst = sorted(results, key=lambda score: (-score.crap, score.module, score.line))
     unmeasured = [score for score in worst if not score.measured and score.complexity > 1]
     if unmeasured:
-        print(
-            f"{len(unmeasured)} function(s) have no coverage data at all. The report is stale or "
-            "was produced from a different tree; re-run pytest --cov.",
-            file=sys.stderr,
-        )
-        for score in unmeasured[:10]:
-            print(f"  {score.module}:{score.line} {score.name}", file=sys.stderr)
+        _report_unmeasured(unmeasured)
         return 1
 
     over = [score for score in worst if score.crap > args.threshold]
@@ -185,15 +224,10 @@ def main(argv: list[str] | None = None) -> int:
     total = len(results)
     print(f"\n{total} functions, threshold {args.threshold}")
     if over:
-        print(f"{len(over)} over threshold:", file=sys.stderr)
-        for score in over:
-            print(
-                f"  {score.crap:.2f}  {score.module}:{score.line} {score.name} "
-                f"(complexity {score.complexity}, coverage {score.coverage:.1%})",
-                file=sys.stderr,
-            )
+        _report_over(over)
         return 1
     print("all functions within the CRAP threshold")
+    _report_headroom(worst, args.threshold)
     return 0
 
 
