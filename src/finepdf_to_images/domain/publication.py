@@ -343,6 +343,11 @@ def render_card(manifest: Mapping[str, Any]) -> str:
     )
 
     return f"""---
+configs:
+  - config_name: documents
+    data_files: {DOCUMENTS_FILE}
+  - config_name: images
+    data_files: {IMAGES_FILE}
 license: odc-by
 task_categories:
 - text-classification
