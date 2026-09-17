@@ -127,16 +127,21 @@ def validate_url(raw: str) -> SafeUrl:
 
 
 def _split(raw: str) -> SplitResult:
+    _reject_unusable_text(raw)
+    try:
+        return urlsplit(raw)
+    except ValueError as error:
+        raise UnsafeUrlError(f"unparseable url {raw!r}: {error}") from error
+
+
+def _reject_unusable_text(raw: str) -> None:
+    """Refuse a string that is not a URL before a parser gets to interpret it generously."""
     if not isinstance(raw, str) or not raw.strip():
         raise UnsafeUrlError("empty url")
     if raw != raw.strip():
         raise UnsafeUrlError(f"url has surrounding whitespace: {raw!r}")
     if _CONTROL_CHARS.search(raw):
         raise UnsafeUrlError(f"url contains control characters: {raw!r}")
-    try:
-        return urlsplit(raw)
-    except ValueError as error:
-        raise UnsafeUrlError(f"unparseable url {raw!r}: {error}") from error
 
 
 def _checked_scheme(scheme: str, raw: str) -> str:
@@ -153,12 +158,15 @@ def _checked_host(hostname: str | None, raw: str) -> str:
     if host in _LOCAL_HOSTNAMES:
         raise UnsafeUrlError(f"url names the local machine: {host!r}")
     _reject_private_address(host, raw)
-    if _is_ip_literal(host):
-        return host
+    if not _is_ip_literal(host):
+        _reject_bad_hostname(host, raw)
+    return host
+
+
+def _reject_bad_hostname(host: str, raw: str) -> None:
     if not _HOST_RE.fullmatch(host):
         raise UnsafeUrlError(f"malformed host {host!r} in {raw!r}")
     _reject_numeric_host(host, raw)
-    return host
 
 
 def _reject_numeric_host(host: str, raw: str) -> None:
@@ -206,14 +214,15 @@ def _reject_private_address(host: str, raw: str) -> None:
         address = ipaddress.ip_address(host)
     except ValueError:
         return
-    if (
-        address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_reserved
-        or address.is_multicast
-        or address.is_unspecified
-    ):
+    non_public = (
+        "is_private",
+        "is_loopback",
+        "is_link_local",
+        "is_reserved",
+        "is_multicast",
+        "is_unspecified",
+    )
+    if any(getattr(address, flag) for flag in non_public):
         raise UnsafeUrlError(f"url points at a non-public address {host!r}: {raw!r}")
 
 

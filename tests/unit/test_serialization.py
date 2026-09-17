@@ -64,16 +64,19 @@ def test_digest_is_the_hash_of_the_canonical_bytes() -> None:
     assert content_digest(value) == sha256_hex(canonical_bytes(value))
 
 
+@pytest.mark.property
 @given(value=json_values)
 def test_canonical_form_round_trips(value: object) -> None:
     assert json.loads(canonical_json(value)) == value
 
 
+@pytest.mark.property
 @given(value=json_values)
 def test_serialization_is_idempotent(value: object) -> None:
     assert canonical_bytes(value) == canonical_bytes(json.loads(canonical_json(value)))
 
 
+@pytest.mark.property
 @given(value=json_values)
 def test_equal_values_hash_equal(value: object) -> None:
     assert content_digest(value) == content_digest(json.loads(canonical_json(value)))

@@ -358,6 +358,7 @@ def test_the_summary_documents_the_vocabulary_and_thresholds() -> None:
 # --------------------------------------------------------------------------- properties
 
 
+@pytest.mark.property
 @given(text=st.text(max_size=400))
 def test_scoring_arbitrary_unicode_never_raises(text: str) -> None:
     result = score(text)
@@ -365,16 +366,19 @@ def test_scoring_arbitrary_unicode_never_raises(text: str) -> None:
     assert result.score >= 0
 
 
+@pytest.mark.property
 @given(text=st.text(max_size=200))
 def test_scoring_is_deterministic_for_any_input(text: str) -> None:
     assert score(text).as_dict() == score(text).as_dict()
 
 
+@pytest.mark.property
 @given(text=st.text(max_size=200), pad=st.sampled_from(["", " ", "\n", "\t", "   \n\t "]))
 def test_surrounding_whitespace_never_changes_the_decision(text: str, pad: str) -> None:
     assert score(f"{pad}{text}{pad}").relevant == score(text).relevant
 
 
+@pytest.mark.property
 @given(text=st.text(max_size=200))
 def test_the_score_never_exceeds_the_number_of_groups(text: str) -> None:
     result = score(text)
@@ -382,6 +386,7 @@ def test_the_score_never_exceeds_the_number_of_groups(text: str) -> None:
     assert set(result.matched_groups) == set(result.evidence)
 
 
+@pytest.mark.property
 @given(text=st.text(max_size=200))
 def test_every_piece_of_evidence_is_a_real_vocabulary_term(text: str) -> None:
     """Evidence must be auditable: a term in the output that is not in the vocabulary is a bug."""
@@ -393,6 +398,7 @@ def test_every_piece_of_evidence_is_a_real_vocabulary_term(text: str) -> None:
             assert set(forms) <= VOCABULARY[group][concept]
 
 
+@pytest.mark.property
 @given(text=st.text(max_size=200))
 def test_no_matched_term_is_subsumed_by_another(text: str) -> None:
     terms = score(text).matched_terms
@@ -400,6 +406,7 @@ def test_no_matched_term_is_subsumed_by_another(text: str) -> None:
         assert not any(other != term and f" {term} " in f" {other} " for other in terms)
 
 
+@pytest.mark.property
 @given(text=st.text(max_size=200))
 def test_relevance_follows_exactly_from_the_documented_thresholds(text: str) -> None:
     result = score(text)
@@ -410,6 +417,7 @@ def test_relevance_follows_exactly_from_the_documented_thresholds(text: str) -> 
     assert result.relevant is expected
 
 
+@pytest.mark.property
 @given(text=st.text(max_size=150), noise=st.text(alphabet="  \n\t.,;:!?()[]-_", max_size=30))
 def test_adding_only_punctuation_and_space_cannot_create_relevance(text: str, noise: str) -> None:
     if not score(text).relevant:

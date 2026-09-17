@@ -194,6 +194,25 @@ class RetrievalResult:
     failed: int
 
 
+def _identity_of(row: Mapping[str, Any]) -> tuple[int, str, str]:
+    """``(row_index, row_id, url)`` for a record, defaulted rather than assumed.
+
+    Each ``or`` is a branch as far as complexity is concerned, so they live here instead of
+    inflating the function that does the actual work.
+    """
+    return int(row.get("row_index") or 0), str(row.get("row_id") or ""), str(row.get("url") or "")
+
+
+def _no_bytes(
+    row_index: int, row_id: str, url: str, reason: FailureReason, detail: str
+) -> tuple[RetrievalRecord, bytes]:
+    """A retrieval that produced no artifact, in the shape the caller expects."""
+    record = retrieval_failure(
+        row_index=row_index, row_id=row_id, url=url, reason=reason, detail=detail
+    )
+    return record, b""
+
+
 def _fetch_one(
     *,
     transport: Transport,
@@ -204,63 +223,28 @@ def _fetch_one(
 
     Returns the record and the bytes, so the caller can store them exactly once per digest.
     """
-    row_index = int(row.get("row_index") or 0)
-    row_id = str(row.get("row_id") or "")
-    raw_url = str(row.get("url") or "")
+    identity = _identity_of(row)
+    row_index, row_id, raw_url = identity
 
     try:
         url = validate_url(raw_url)
     except UnsafeUrlError as error:
         # Rejected before any network access, which is the point of doing this in the domain.
-        return (
-            retrieval_failure(
-                row_index=row_index,
-                row_id=row_id,
-                url=raw_url,
-                reason=FailureReason.UNSAFE_URL,
-                detail=str(error),
-            ),
-            b"",
-        )
+        return _no_bytes(*identity, FailureReason.UNSAFE_URL, str(error))
 
     try:
         response = transport.fetch(url, limits)
     except TransportError as error:
-        return (
-            retrieval_failure(
-                row_index=row_index,
-                row_id=row_id,
-                url=raw_url,
-                reason=error.reason,
-                detail=error.detail,
-            ),
-            b"",
-        )
+        return _no_bytes(*identity, error.reason, error.detail)
     except Exception as error:  # a transport must never abort the whole run
         # Belt and braces behind HttpxTransport's own catch-all. One malformed row must not lose
         # every record already fetched, and the manifest is only written after this loop.
-        return (
-            retrieval_failure(
-                row_index=row_index,
-                row_id=row_id,
-                url=raw_url,
-                reason=FailureReason.TRANSPORT_ERROR,
-                detail=f"{type(error).__name__}: {error}",
-            ),
-            b"",
-        )
+        detail = f"{type(error).__name__}: {error}"
+        return _no_bytes(*identity, FailureReason.TRANSPORT_ERROR, detail)
 
     if response.truncated:
-        return (
-            retrieval_failure(
-                row_index=row_index,
-                row_id=row_id,
-                url=raw_url,
-                reason=FailureReason.TOO_LARGE,
-                detail=f"body exceeded the {limits.max_bytes} byte limit and the read was stopped",
-            ),
-            b"",
-        )
+        detail = f"body exceeded the {limits.max_bytes} byte limit and the read was stopped"
+        return _no_bytes(*identity, FailureReason.TOO_LARGE, detail)
 
     record = evaluate_response(
         row_index=row_index,
@@ -300,15 +284,7 @@ def run_retrieve(
         record, body = _fetch_one(transport=transport, limits=limits, row=row)
         entry = record.as_dict()
 
-        if record.ok and record.sha256 and record.path:
-            retrieved += 1
-            if record.sha256 in seen:
-                entry["duplicate_of"] = str(seen[record.sha256])
-            else:
-                seen[record.sha256] = record.row_index
-                # Written once per digest. The path is derived from the content, so re-running
-                # cannot produce a second copy under a different name.
-                write_bytes(out_dir / record.path, body)
+        retrieved += _store(record, body, seen, entry, out_dir)
 
         # Explicit field pick rather than a blanket merge: relying on the select manifest's
         # source block never growing a `url` or `row_index` key is a fragile contract.
@@ -349,6 +325,84 @@ def run_retrieve(
     )
 
 
+def _document_row(
+    record: Mapping[str, Any], images: Sequence[ImageRecord], error: str
+) -> dict[str, Any]:
+    """One row per retrieved document, whether or not it yielded images."""
+    return {
+        "row_index": record.get("row_index"),
+        "row_id": record.get("row_id"),
+        "url": record.get("url"),
+        "pdf_sha256": record.get("sha256"),
+        "pdf_path": record.get("path"),
+        "image_count": len(images),
+        "ok": not error,
+        "error": error,
+    }
+
+
+def _indexed(
+    images: Sequence[ImageRecord],
+    payloads: Mapping[tuple[int, int], bytes],
+    seen: dict[str, str],
+    out_dir: pathlib.Path,
+) -> list[dict[str, Any]]:
+    """Write each new image once and return its manifest row, in document order.
+
+    ``seen`` is keyed on the PDF's digest rather than its row id: a row id can be empty or
+    repeated across documents, and then the ``duplicate_of`` reference points at nothing
+    resolvable.
+    """
+    rows: list[dict[str, Any]] = []
+    for image in sorted(images, key=sort_key):
+        entry = image.as_dict()
+        if image.sha256 in seen:
+            entry["duplicate_of"] = seen[image.sha256]
+        else:
+            seen[image.sha256] = f"{image.pdf_sha256}#{image.page_index}.{image.image_index}"
+            write_bytes(out_dir / image.path, payloads[(image.page_index, image.image_index)])
+        rows.append(entry)
+    return rows
+
+
+def _store(
+    record: RetrievalRecord,
+    body: bytes,
+    seen: dict[str, int],
+    entry: dict[str, Any],
+    out_dir: pathlib.Path,
+) -> int:
+    """Write a newly retrieved PDF once per digest; return 1 if it was a retrieval at all.
+
+    Deduplication is by content, not by URL: the same document served from two addresses is one
+    artifact, and the path is derived from the content, so re-running cannot produce a second copy
+    under a different name.
+    """
+    if not (record.ok and record.sha256 and record.path):
+        return 0
+    if record.sha256 in seen:
+        entry["duplicate_of"] = str(seen[record.sha256])
+    else:
+        seen[record.sha256] = record.row_index
+        write_bytes(out_dir / record.path, body)
+    return 1
+
+
+def _provenance_for(record: RetrievalRecord, source: Mapping[str, Any]) -> dict[str, Any]:
+    """Provenance for one retrieval, as an explicit field pick.
+
+    A blanket ``{**source, **record}`` merge would rely on the select manifest's source block
+    never growing a ``url`` or ``row_index`` key -- a contract nothing enforces.
+    """
+    return {
+        **{key: source.get(key) for key in ("dataset", "revision", "config", "split", "shard")},
+        "row_index": record.row_index,
+        "row_id": record.row_id,
+        "url": record.url,
+        "sha256": record.sha256,
+    }
+
+
 def _failure_counts(records: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     """How many rows failed for each reason. A run should be able to show why, not just how many."""
     counts: dict[str, int] = {}
@@ -384,14 +438,7 @@ def _pdf_bytes_for(record: Mapping[str, Any], pdf_root: pathlib.Path) -> bytes:
     The bytes are then verified against the digest, so a corrupted or swapped artifact is caught
     rather than silently indexed under the wrong identity.
     """
-    digest = record.get("sha256")
-    stored = record.get("path")
-    if not isinstance(digest, str) or not isinstance(stored, str):
-        raise ImageExtractionError("record has no usable sha256 and path")
-    expected = artifact_path(digest)
-    if stored != expected:
-        raise ImageExtractionError(f"path {stored!r} is not the content-addressed {expected!r}")
-
+    digest, expected = _checked_reference(record)
     try:
         data = read_bytes(pdf_root / expected)
     except OSError as error:
@@ -403,6 +450,32 @@ def _pdf_bytes_for(record: Mapping[str, Any], pdf_root: pathlib.Path) -> bytes:
     if actual != digest:
         raise ImageExtractionError(f"stored pdf hashes to {actual}, not the recorded {digest}")
     return data
+
+
+def _image_record(image: Any, row_id: str, row_index: int, pdf_sha256: str) -> ImageRecord:
+    return build_image_record(
+        document_row_id=row_id,
+        document_row_index=row_index,
+        pdf_sha256=pdf_sha256,
+        page_index=image.page_index,
+        image_index=image.image_index,
+        data=image.data,
+        mime=image.mime,
+        width=image.width,
+        height=image.height,
+    )
+
+
+def _checked_reference(record: Mapping[str, Any]) -> tuple[str, str]:
+    """The digest and the only path it may legitimately live at."""
+    digest = record.get("sha256")
+    stored = record.get("path")
+    if not isinstance(digest, str) or not isinstance(stored, str):
+        raise ImageExtractionError("record has no usable sha256 and path")
+    expected = artifact_path(digest)
+    if stored != expected:
+        raise ImageExtractionError(f"path {stored!r} is not the content-addressed {expected!r}")
+    return digest, expected
 
 
 def _extract_one(
@@ -418,11 +491,10 @@ def _extract_one(
     image data into every manifest row -- and re-extracting per image would re-parse the whole
     document once per picture.
     """
-    row_id = str(record.get("row_id") or "")
+    row_index, row_id, _url = _identity_of(record)
     pdf_sha256 = str(record.get("sha256") or "")
 
     try:
-        row_index = int(record.get("row_index") or 0)
         pdf_bytes = _pdf_bytes_for(record, pdf_root)
         extracted = extractor.extract(pdf_bytes)
         records = [
@@ -439,20 +511,23 @@ def _extract_one(
             )
             for image in extracted
         ]
-    except ImageExtractionError as error:
-        # A malformed document fails with a diagnostic and contributes nothing. Partial output
-        # from a document we could not read would be worse than none.
-        return [], {}, str(error)
-    except (OSError, ValueError, TypeError) as error:
-        # A missing file, a non-string path, a non-numeric row index. These used to escape
-        # run_extract entirely -- and because the manifest is written after the loop, one bad row
-        # lost every document already extracted. "One failure never stops the others" has to be
-        # true, not just documented.
-        return [], {}, f"{type(error).__name__}: {error}"
     except Exception as error:
-        # A third-party ImageExtractor is not obliged to raise only ImageExtractionError.
-        return [], {}, f"{type(error).__name__}: {error}"
+        # Deliberately one handler. A malformed document, a missing file, a non-string path, a
+        # non-numeric row index, or a third-party extractor raising something of its own are all
+        # the same thing here: this document contributes nothing and the run continues. These used
+        # to escape run_extract, and because the manifest is written after the loop, one bad row
+        # lost every document already extracted.
+        return [], {}, _reason_for(error)
     return records, {(i.page_index, i.image_index): i.data for i in extracted}, ""
+
+
+def _reason_for(error: Exception) -> str:
+    """Our own diagnostics read as themselves; anything else is named by its type."""
+    return (
+        str(error)
+        if isinstance(error, ImageExtractionError)
+        else f"{type(error).__name__}: {error}"
+    )
 
 
 def run_extract(
@@ -486,34 +561,13 @@ def run_extract(
             extractor=extractor, record=record, pdf_root=pdf_root
         )
 
-        document_rows.append(
-            {
-                "row_index": record.get("row_index"),
-                "row_id": record.get("row_id"),
-                "url": record.get("url"),
-                "pdf_sha256": record.get("sha256"),
-                "pdf_path": record.get("path"),
-                "image_count": len(images),
-                "ok": not error,
-                "error": error,
-            }
-        )
+        document_rows.append(_document_row(record, images, error))
         if error:
             failed += 1
             continue
-        if images:
-            with_images += 1
+        with_images += 1 if images else 0
 
-        for image in sorted(images, key=sort_key):
-            entry = image.as_dict()
-            if image.sha256 in seen:
-                entry["duplicate_of"] = seen[image.sha256]
-            else:
-                # Keyed on the PDF's digest, not its row id: a row id can be empty or repeated
-                # across documents, and then the reference points at nothing resolvable.
-                seen[image.sha256] = f"{image.pdf_sha256}#{image.page_index}.{image.image_index}"
-                write_bytes(out_dir / image.path, payloads[(image.page_index, image.image_index)])
-            image_rows.append(entry)
+        image_rows.extend(_indexed(images, payloads, seen, out_dir))
 
     manifest: dict[str, Any] = {
         "schema_version": 1,

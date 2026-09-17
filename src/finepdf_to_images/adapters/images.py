@@ -65,23 +65,7 @@ class PypdfImageExtractor:
         if not pdf_bytes:
             raise ImageExtractionError("cannot extract images from an empty document")
 
-        try:
-            reader = PdfReader(io.BytesIO(pdf_bytes))
-            if len(reader.pages) > self.max_pages:
-                raise ImageExtractionError(
-                    f"document has more than {self.max_pages} pages; refusing to walk it"
-                )
-            pages = list(reader.pages)
-        except ImageExtractionError:
-            raise
-        except Exception as error:
-            # Deliberately broad, and bounded and actionable: the caller gets the library's
-            # reason, not a traceback. pypdf raises DependencyError for missing external decoders,
-            # which inherits from nothing PDF-specific.
-            raise ImageExtractionError(
-                f"unreadable pdf: {type(error).__name__}: {error}"
-            ) from error
-
+        pages = self._pages(PdfReader, pdf_bytes)
         try:
             return self._walk(pages)
         except ImageExtractionError:
@@ -91,6 +75,25 @@ class PypdfImageExtractor:
             # can raise may abort a whole run: one unreadable document is one recorded failure.
             raise ImageExtractionError(
                 f"extraction failed: {type(error).__name__}: {error}"
+            ) from error
+
+    def _pages(self, reader_class: Any, pdf_bytes: bytes) -> list[Any]:
+        """Open the document and bound how many pages may be walked."""
+        try:
+            reader = reader_class(io.BytesIO(pdf_bytes))
+            if len(reader.pages) > self.max_pages:
+                raise ImageExtractionError(
+                    f"document has more than {self.max_pages} pages; refusing to walk it"
+                )
+            return list(reader.pages)
+        except ImageExtractionError:
+            raise
+        except Exception as error:
+            # Deliberately broad, bounded and actionable: the caller gets the library's reason,
+            # not a traceback. pypdf raises DependencyError for missing external decoders, which
+            # inherits from nothing PDF-specific.
+            raise ImageExtractionError(
+                f"unreadable pdf: {type(error).__name__}: {error}"
             ) from error
 
     def _walk(self, pages: list[Any]) -> list[ExtractedImage]:

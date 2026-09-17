@@ -106,6 +106,7 @@ class FixtureTransport:
         return dataclass_replace(response, final_url=url.url)
 
 
+@dataclass(frozen=True, slots=True)
 class HttpxTransport:
     """The real transport. Streams, stops at the byte limit, and validates every redirect hop.
 
@@ -117,70 +118,74 @@ class HttpxTransport:
     would follow them without ever showing them to :func:`validate_url`. A crawl URL answering
     ``302 Location: http://169.254.169.254/`` must not be followed, and letting httpx decide is
     exactly how that happens.
+
+    ``http_transport`` substitutes httpx's own transport layer, so the tests exercise this class --
+    real streaming, real redirect handling, real header parsing -- against a callable instead of a
+    socket. Without that seam the most dangerous code in the project would be the least tested.
     """
 
-    def __init__(self, user_agent: str = "finepdf-to-images/0.1 (+research POC)") -> None:
-        self.user_agent = user_agent
+    user_agent: str = "finepdf-to-images/0.1 (+research POC)"
+    http_transport: Any = None
 
     def fetch(self, url: SafeUrl, limits: RetrievalLimits) -> Response:
         import httpx
 
-        # httpx requires a default or all four parameters; write and pool follow the read bound.
-        timeout = httpx.Timeout(
-            limits.read_timeout,
-            connect=limits.connect_timeout,
-            read=limits.read_timeout,
-        )
-        attempts = limits.retries + 1
         last: Exception = TransportError(FailureReason.TIMEOUT, "no attempt was made")
-
-        for _attempt in range(attempts):
+        for _attempt in range(limits.retries + 1):
             try:
-                return self._follow(httpx, url, limits, timeout)
+                return self._follow(httpx, url, limits)
             except TransportError:
                 # Already classified by the domain -- an unsafe redirect or too many hops is a
                 # decision, not a transient fault, so retrying it would be pointless.
                 raise
             except httpx.TimeoutException as error:
-                # A timeout is retried once: it is a failure to get an answer, not an answer.
+                # A timeout is the only thing worth another attempt: it is a failure to get an
+                # answer rather than an answer.
                 last = error
             except Exception as error:
                 # Deliberately broad. httpx.InvalidURL and friends do not inherit from HTTPError,
                 # and one malformed row escaping here aborted an entire run -- losing every record
-                # already fetched, because the manifest is written after the loop. A failure must
-                # be a record, not an exception.
-                #
-                # Not retried: a malformed URL will fail identically the second time. Only a
-                # timeout is worth another attempt.
+                # already fetched, because the manifest is written after the loop. Not retried: it
+                # would fail identically.
                 raise TransportError(
                     FailureReason.TRANSPORT_ERROR, f"{type(error).__name__}: {error}"
                 ) from error
-
-        # Only a timeout reaches here: every other exception is classified and raised inside the
-        # loop, because retrying it would fail identically.
         raise TransportError(FailureReason.TIMEOUT, str(last))
 
-    def _follow(self, httpx: Any, url: SafeUrl, limits: RetrievalLimits, timeout: Any) -> Response:
+    def _client(self, httpx: Any, limits: RetrievalLimits) -> Any:
+        # httpx requires a default or all four parameters; write and pool follow the read bound.
+        timeout = httpx.Timeout(
+            limits.read_timeout, connect=limits.connect_timeout, read=limits.read_timeout
+        )
+        options: dict[str, Any] = {
+            "timeout": timeout,
+            "follow_redirects": False,
+            "headers": {"User-Agent": self.user_agent, "Accept": "application/pdf,*/*;q=0.5"},
+        }
+        if self.http_transport is not None:
+            options["transport"] = self.http_transport
+        return httpx.Client(**options)
+
+    def _follow(self, httpx: Any, url: SafeUrl, limits: RetrievalLimits) -> Response:
         """Walk the redirect chain by hand, validating every hop."""
         current = url
-        with httpx.Client(
-            timeout=timeout,
-            follow_redirects=False,
-            headers={"User-Agent": self.user_agent, "Accept": "application/pdf,*/*;q=0.5"},
-        ) as client:
+        with self._client(httpx, limits) as client:
             for hop in range(limits.max_redirects + 1):
                 response = self._stream(client, current, limits)
                 if response.status not in REDIRECT_STATUSES or not response.location:
                     return response
                 if hop == limits.max_redirects:
                     break
-                try:
-                    current = next_hop(current, response.location)
-                except UnsafeUrlError as error:
-                    raise TransportError(FailureReason.UNSAFE_REDIRECT, str(error)) from error
+                current = self._next(current, response.location)
         raise TransportError(
             FailureReason.TOO_MANY_REDIRECTS, f"more than {limits.max_redirects} redirects"
         )
+
+    def _next(self, current: SafeUrl, location: str) -> SafeUrl:
+        try:
+            return next_hop(current, location)
+        except UnsafeUrlError as error:
+            raise TransportError(FailureReason.UNSAFE_REDIRECT, str(error)) from error
 
     def _stream(self, client: Any, url: SafeUrl, limits: RetrievalLimits) -> Response:
         with client.stream("GET", url.url) as response:

@@ -102,6 +102,7 @@ def test_a_non_digest_is_refused(digest: str) -> None:
         image_path(digest, "image/png")
 
 
+@pytest.mark.property
 @given(data=st.binary(max_size=200))
 def test_image_paths_never_escape_their_prefix(data: bytes) -> None:
     path = image_path(sha256_hex(data), "image/png")
@@ -169,6 +170,7 @@ def test_ordering_follows_document_then_page_then_position() -> None:
     assert [sort_key(r) for r in ordered] == [(0, 0, 0), (0, 0, 1), (0, 2, 0), (1, 0, 0)]
 
 
+@pytest.mark.property
 @given(
     positions=st.lists(
         st.tuples(

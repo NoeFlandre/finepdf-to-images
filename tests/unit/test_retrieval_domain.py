@@ -186,6 +186,7 @@ def test_a_non_string_url_is_refused() -> None:
         validate_url(None)  # ty: ignore[invalid-argument-type]
 
 
+@pytest.mark.property
 @given(raw=st.text(max_size=80))
 def test_validating_arbitrary_text_either_succeeds_or_raises_unsafe(raw: str) -> None:
     """No input may produce an unexpected exception type: every rejection is a recorded one."""
@@ -379,6 +380,7 @@ def test_artifact_path_refuses_anything_that_is_not_a_digest(digest: str) -> Non
         artifact_path(digest)
 
 
+@pytest.mark.property
 @given(data=st.binary(max_size=200))
 def test_artifact_paths_never_escape_their_prefix(data: bytes) -> None:
     path = artifact_path(sha256_hex(data))

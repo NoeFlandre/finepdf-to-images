@@ -91,6 +91,12 @@ def _cmd_score(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+#: Substituted by the CLI tests so the retrieve command can be exercised without a network. The
+#: command is the composition root for the riskiest stage, and leaving it untested because it is
+#: "just wiring" is how wiring bugs reach production.
+TRANSPORT_FACTORY: Callable[[], Any] = HttpxTransport
+
+
 def _cmd_retrieve(args: argparse.Namespace) -> int:
     scored = read_jsonl(pathlib.Path(args.scored))
     rows = [row for row in scored if not args.relevant_only or _is_relevant(row)]
@@ -103,7 +109,7 @@ def _cmd_retrieve(args: argparse.Namespace) -> int:
         retries=args.retries,
     )
     result = run_retrieve(
-        transport=HttpxTransport(),
+        transport=TRANSPORT_FACTORY(),
         rows=rows,
         source=source,
         out_dir=pathlib.Path(args.out),

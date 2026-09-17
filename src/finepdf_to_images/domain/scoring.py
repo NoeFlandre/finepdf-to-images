@@ -249,6 +249,11 @@ def normalize(text: str) -> str:
     return f" {_NON_WORD.sub(' ', folded).strip()} "
 
 
+#: Every surface form, for counting and for the exclusion guard.
+ALL_SURFACE_FORMS: frozenset[str] = frozenset(
+    form for concepts in VOCABULARY.values() for forms in concepts.values() for form in forms
+)
+
 #: Every surface form, longest first, so the longest phrase at a given position wins. Ties break
 #: alphabetically to keep the scan deterministic.
 _FORMS_LONGEST_FIRST: tuple[str, ...] = tuple(
@@ -283,6 +288,32 @@ def _matched_forms(normalized: str) -> set[str]:
             matched.add(form)
             working = working.replace(needle, f" {_CLAIMED} ")
     return matched
+
+
+def _evidence_for(surviving: set[str]) -> dict[str, dict[str, tuple[str, ...]]]:
+    """Group the surviving surface forms by concept, dropping concepts nothing matched."""
+    evidence: dict[str, dict[str, tuple[str, ...]]] = {}
+    for group in sorted(VOCABULARY):
+        concepts = {
+            concept: tuple(sorted(forms & surviving))
+            for concept, forms in sorted(VOCABULARY[group].items())
+            if forms & surviving
+        }
+        if concepts:
+            evidence[group] = concepts
+    return evidence
+
+
+def _has_real_depth(evidence: Mapping[str, Mapping[str, tuple[str, ...]]]) -> bool:
+    """Whether some group is deep enough *and* not made only of bare commodity names.
+
+    A list of four crop names is a price list or a menu, not a document about agriculture.
+    """
+    return any(
+        len(concepts) >= MIN_CONCEPTS_IN_ONE_GROUP
+        and not set(concepts).issubset(WEAK_CONCEPTS.get(group, frozenset()))
+        for group, concepts in evidence.items()
+    )
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -339,25 +370,11 @@ def score(text: str, language: str = VOCABULARY_LANGUAGE) -> RelevanceResult:
     catches breadth, the second catches a narrowly focused document that breadth alone would miss.
     """
     surviving = _matched_forms(normalize(text))
-
-    evidence: dict[str, dict[str, tuple[str, ...]]] = {}
-    for group in sorted(VOCABULARY):
-        concepts = {
-            concept: tuple(sorted(forms & surviving))
-            for concept, forms in sorted(VOCABULARY[group].items())
-            if forms & surviving
-        }
-        if concepts:
-            evidence[group] = concepts
+    evidence = _evidence_for(surviving)
 
     groups = tuple(sorted(evidence))
     depth = max((len(concepts) for concepts in evidence.values()), default=0)
-    deep_enough = any(
-        len(concepts) >= MIN_CONCEPTS_IN_ONE_GROUP
-        and not set(concepts).issubset(WEAK_CONCEPTS.get(group, frozenset()))
-        for group, concepts in evidence.items()
-    )
-    relevant = len(groups) >= MIN_GROUPS or deep_enough
+    relevant = len(groups) >= MIN_GROUPS or _has_real_depth(evidence)
 
     return RelevanceResult(
         relevant=relevant,
@@ -370,19 +387,21 @@ def score(text: str, language: str = VOCABULARY_LANGUAGE) -> RelevanceResult:
     )
 
 
+def _serialized_vocabulary() -> dict[str, dict[str, list[str]]]:
+    return {
+        group: {concept: sorted(forms) for concept, forms in sorted(concepts.items())}
+        for group, concepts in sorted(VOCABULARY.items())
+    }
+
+
 def vocabulary_summary() -> dict[str, Any]:
     """The vocabulary in machine-readable form, for the run manifest and the dataset card."""
     return {
         "version": VOCABULARY_VERSION,
         "language": VOCABULARY_LANGUAGE,
-        "groups": {
-            group: {concept: sorted(forms) for concept, forms in sorted(concepts.items())}
-            for group, concepts in sorted(VOCABULARY.items())
-        },
+        "groups": _serialized_vocabulary(),
         "concept_count": sum(len(concepts) for concepts in VOCABULARY.values()),
-        "surface_form_count": sum(
-            len(forms) for concepts in VOCABULARY.values() for forms in concepts.values()
-        ),
+        "surface_form_count": len(ALL_SURFACE_FORMS),
         "thresholds": {
             "min_groups": MIN_GROUPS,
             "min_concepts_in_one_group": MIN_CONCEPTS_IN_ONE_GROUP,

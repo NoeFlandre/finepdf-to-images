@@ -135,13 +135,7 @@ class SamplingSpec:
     strategy: str = "head"
 
     def __post_init__(self) -> None:
-        if not isinstance(self.limit, int) or isinstance(self.limit, bool) or self.limit < 1:
-            raise SourceConfigurationError(f"invalid limit {self.limit!r}: expected a positive int")
-        if self.limit > MAX_LIMIT:
-            raise SourceConfigurationError(
-                f"invalid limit {self.limit}: the bounded pilot refuses more than "
-                f"{MAX_LIMIT} rows. Raising this ceiling is a reviewable edit, not a runtime flag."
-            )
+        _require_limit(self.limit)
         if self.strategy not in {"head", "hash"}:
             raise SourceConfigurationError(
                 f"invalid strategy {self.strategy!r}: expected 'head' or 'hash'"
@@ -151,6 +145,21 @@ class SamplingSpec:
 
     def as_dict(self) -> dict[str, object]:
         return {"limit": self.limit, "seed": self.seed, "strategy": self.strategy}
+
+
+def _require_limit(limit: object) -> None:
+    """A positive int, no larger than the pilot's ceiling.
+
+    Without the ceiling "bounded" is a promise the code does not keep: a large enough limit walks
+    every row group in the shard.
+    """
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+        raise SourceConfigurationError(f"invalid limit {limit!r}: expected a positive int")
+    if limit > MAX_LIMIT:
+        raise SourceConfigurationError(
+            f"invalid limit {limit}: the bounded pilot refuses more than {MAX_LIMIT} rows. "
+            "Raising this ceiling is a reviewable edit, not a runtime flag."
+        )
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

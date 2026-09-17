@@ -3,15 +3,11 @@
 Debt is recorded here explicitly rather than hidden. Each entry states what is missing, why it was
 acceptable to ship without it, and what would trigger paying it down.
 
-## TD-001 — no property, acceptance, coverage or mutation gates at bootstrap
+## ~~TD-001~~ — retired
 
-**State.** The bootstrap commit ships lint, types, unit tests and architecture checks only.
-
-**Why.** There is no domain logic yet to property-test or mutate; adding Hypothesis, `pytest-bdd`,
-`radon` and a mutation runner now would mean committing unused dependencies, which the bootstrap
-acceptance criteria forbid.
-
-**Trigger.** Issue #5 wires the full gauntlet once the pipeline stages exist.
+The full gauntlet landed with issue #5: property tests, Gherkin acceptance scenarios, coverage,
+CRAP, mutation testing and a real-CLI smoke test, all wired into CI. See
+[Quality gates](quality.md).
 
 ## TD-002 — `ty` is pre-1.0
 
