@@ -1074,4 +1074,5 @@ def test_the_card_does_not_overstate_what_the_allow_list_checks() -> None:
     _, _, manifest = assembled()
     card = render_card(manifest)
     assert "Every host in a retrieval" not in card
-    assert "requested URL and the final URL after redirects" in card
+    # Normalised: the card hard-wraps, so the phrase can be split across lines.
+    assert "requested URL and the final URL after redirects" in " ".join(card.split())
