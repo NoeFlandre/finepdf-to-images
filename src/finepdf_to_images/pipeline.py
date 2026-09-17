@@ -6,6 +6,7 @@ belongs in :mod:`finepdf_to_images.domain`, where it can be tested without I/O.
 
 from __future__ import annotations
 
+import dataclasses
 import pathlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -13,10 +14,14 @@ from typing import Any
 
 from finepdf_to_images.adapters.hub import Hub
 from finepdf_to_images.adapters.images import ImageExtractor, encoder_versions
+from finepdf_to_images.adapters.parquet import rows_to_parquet
 from finepdf_to_images.adapters.retrieval import Transport, TransportError
 from finepdf_to_images.adapters.source import ShardReader
 from finepdf_to_images.adapters.storage import read_bytes, write_bytes
 from finepdf_to_images.domain import allowlist, policy
+from finepdf_to_images.domain.dataset import build_dataset_rows
+from finepdf_to_images.domain.dataset import build_plan as build_dataset_plan
+from finepdf_to_images.domain.dataset import render_card as render_dataset_card
 from finepdf_to_images.domain.images import (
     ImageExtractionError,
     ImageRecord,
@@ -27,17 +32,13 @@ from finepdf_to_images.domain.images import (
 from finepdf_to_images.domain.publication import (
     PublicationError,
     PublicationPlan,
-    PublishFile,
     build_document_rows,
     build_image_rows,
-    build_plan,
     cleared_image_digests,
-    cleared_pdf_digests,
     cleared_row_ids,
     is_noop,
     stale_paths,
 )
-from finepdf_to_images.domain.publication import build_manifest as build_publication_manifest
 from finepdf_to_images.domain.retrieval import (
     FailureReason,
     RetrievalLimits,
@@ -631,7 +632,6 @@ def run_publish(
     extract_manifest: Mapping[str, Any] | None = None,
     apply: bool = False,
     out_dir: pathlib.Path | None = None,
-    pdf_root: pathlib.Path | None = None,
     image_root: pathlib.Path | None = None,
 ) -> PublicationResult:
     """Plan a publication, and carry it out only when ``apply`` is true.
@@ -648,7 +648,6 @@ def run_publish(
         documents=documents,
         images=images,
         extract_manifest=extract_manifest,
-        pdf_root=pdf_root,
         image_root=image_root,
     )
     if out_dir is not None:
@@ -729,70 +728,70 @@ def _plan_publication(
     retrieved: Sequence[Mapping[str, Any]],
     documents: Sequence[Mapping[str, Any]],
     images: Sequence[Mapping[str, Any]],
-    extract_manifest: Mapping[str, Any] | None,
-    pdf_root: pathlib.Path | None = None,
+    extract_manifest: Mapping[str, Any] | None = None,
     image_root: pathlib.Path | None = None,
 ) -> tuple[PublicationPlan, dict[str, Any]]:
-    """Assemble everything a publication would write, without touching the Hub."""
+    """Assemble the published dataset, without touching the Hub.
+
+    The stage rows are still built in full -- that is where the relevance decision, the retrieval
+    outcome and the licensing disposition live -- but they are no longer *published*. What ships is
+    the minimal table: one row per relevant document, with its text, its images and the terms that
+    kept it. Everything else was this pipeline's bookkeeping published because it existed.
+    """
     document_rows = build_document_rows(scored=scored, retrieved=retrieved, extracted=documents)
     cleared = cleared_row_ids(document_rows)
-    # Not conditioned on ``image_root``: what the policy cleared is a fact about the run, not
-    # about which paths the caller happened to pass. Deriving it from the flag made a forgotten
-    # --image-root look like "nothing was cleared", which silently published a smaller dataset.
-    shipped_images = cleared_image_digests(images, cleared)
-    image_rows = build_image_rows(images, shipped_images)
-    manifest = build_publication_manifest(
+    shipped = cleared_image_digests(images, cleared)
+    image_rows = build_image_rows(images, shipped)
+
+    image_bytes = _load_image_bytes(shipped, image_root)
+    rows = build_dataset_rows(documents=document_rows, images=image_rows, image_bytes=image_bytes)
+    card = render_dataset_card(
+        repo=repo,
         source=select_manifest["source"],
         sampling=select_manifest["sampling"],
-        documents=document_rows,
-        images=image_rows,
-        vocabulary_version=vocabulary_summary()["version"],
-        encoder=(extract_manifest or {}).get("encoder"),
     )
-    artifacts = _load_artifacts(
-        documents=document_rows,
-        shipped_images=shipped_images,
-        pdf_root=pdf_root,
-        image_root=image_root,
-    )
-    plan = build_plan(
-        repo=repo,
-        manifest=manifest,
-        documents=document_rows,
-        images=image_rows,
-        artifacts=artifacts,
-    )
-    return plan, manifest
+    plan = build_dataset_plan(repo=repo, card=card, table=rows_to_parquet(rows))
+    summary = {
+        "counts": {
+            "documents": len(document_rows),
+            "relevant": len(rows),
+            "retrieved": sum(1 for row in document_rows if row["retrieved"]),
+            "images": sum(len(row["images"]) for row in rows),
+        },
+        "source": dict(select_manifest["source"]),
+        "sampling": dict(select_manifest["sampling"]),
+        "encoder": (extract_manifest or {}).get("encoder"),
+    }
+    return dataclasses.replace(plan, manifest=summary), summary
 
 
-def _load_artifacts(
-    *,
-    documents: Sequence[Mapping[str, Any]],
-    shipped_images: Mapping[str, str],
-    pdf_root: pathlib.Path | None,
-    image_root: pathlib.Path | None,
-) -> list[PublishFile]:
-    """Read the bytes for every cleared artifact, verifying each against its own digest.
+def _load_image_bytes(
+    shipped: Mapping[str, str], image_root: pathlib.Path | None
+) -> dict[str, bytes]:
+    """The bytes for every image cleared for republication, checked against its own digest.
 
-    The digest is re-computed from the bytes on disk rather than trusted from the index. The index
-    and the file can disagree -- a truncated write, an edited working copy -- and publishing under
-    a digest the bytes do not have would break the one guarantee content addressing offers.
+    Re-hashed rather than trusted from the index: the index and the file on disk can disagree --
+    a truncated write, an edited working copy -- and embedding bytes under a digest they do not
+    have would break the one guarantee content addressing offers.
     """
-    pdfs = cleared_pdf_digests(documents)
-    artifacts: list[PublishFile] = []
+    if not shipped:
+        return {}
+    root = _required_root(image_root, len(shipped), "--image-root", "image")
+    return {
+        digest: _artifact_bytes(root / image_path(digest, mime), digest)
+        for digest, mime in sorted(shipped.items())
+    }
 
-    if pdfs:
-        root = _required_root(pdf_root, len(pdfs), "--pdf-root", "PDF")
-        for digest, row_id in sorted(pdfs.items()):
-            artifacts.append(
-                _artifact(root / artifact_path(digest), digest, artifact_path(digest), row_id)
-            )
-    if shipped_images:
-        root = _required_root(image_root, len(shipped_images), "--image-root", "image")
-        for digest, mime in sorted(shipped_images.items()):
-            path = image_path(digest, mime)
-            artifacts.append(_artifact(root / path, digest, path, digest))
-    return artifacts
+
+def _artifact_bytes(source: pathlib.Path, digest: str) -> bytes:
+    data = source.read_bytes()
+    actual = sha256_hex(data)
+    if actual != digest:
+        raise PublicationError(
+            f"image is {actual} on disk but indexed as {digest}: refusing to publish bytes "
+            f"under a digest they do not have ({source})"
+        )
+    return data
 
 
 def _required_root(root: pathlib.Path | None, cleared: int, flag: str, kind: str) -> pathlib.Path:
@@ -813,17 +812,6 @@ def _required_root(root: pathlib.Path | None, cleared: int, flag: str, kind: str
             "deletes what it does not contain."
         )
     return root
-
-
-def _artifact(source: pathlib.Path, digest: str, path: str, owner: str) -> PublishFile:
-    data = source.read_bytes()
-    actual = sha256_hex(data)
-    if actual != digest:
-        raise PublicationError(
-            f"artifact for {owner} is {actual} on disk but indexed as {digest}: refusing to "
-            f"publish bytes under a digest they do not have ({source})"
-        )
-    return PublishFile(path, data)
 
 
 def _commit_message(manifest: Mapping[str, Any]) -> str:

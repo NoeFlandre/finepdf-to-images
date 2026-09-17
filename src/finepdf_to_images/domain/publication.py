@@ -431,7 +431,8 @@ def _published_paths(rows: Sequence[Mapping[str, Any]], field: str) -> set[str]:
     return {str(row[field]) for row in rows if row.get(field)}
 
 
-def _validate_repo(repo: str) -> None:
+def validate_repo(repo: str) -> None:
+    """``namespace/name`` as the Hub spells it, checked before it reaches an API call or a card."""
     if not isinstance(repo, str) or not _REPO_RE.fullmatch(repo):
         raise PublicationError(f"invalid destination repo {repo!r}: expected namespace/name")
 
@@ -559,7 +560,7 @@ def build_plan(
     the policy's decisions before anything is planned, so an artifact can only reach the Hub if a
     curated allow-list entry cleared its row.
     """
-    _validate_repo(repo)
+    validate_repo(repo)
     _check_card_matches_payload(manifest, artifacts)
     _check_artifacts(artifacts, documents, images)
     relevant_docs = derive_relevant_rows(documents)

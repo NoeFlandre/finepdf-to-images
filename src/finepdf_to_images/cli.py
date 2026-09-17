@@ -217,7 +217,6 @@ def _cmd_publish(args: argparse.Namespace) -> int:
         else None,
         apply=args.apply,
         out_dir=pathlib.Path(args.out) if args.out else None,
-        pdf_root=pathlib.Path(args.pdf_root) if args.pdf_root else None,
         image_root=pathlib.Path(args.image_root) if args.image_root else None,
     )
     return _report_publication(result, applied_requested=args.apply)
@@ -226,9 +225,9 @@ def _cmd_publish(args: argparse.Namespace) -> int:
 def _report_publication(result: Any, *, applied_requested: bool) -> int:
     counts = result.plan.manifest["counts"]
     print(f"repo       {result.plan.repo}")
-    print(f"documents  {counts['documents']} ({counts['relevant']} relevant)")
+    print(f"documents  {counts['documents']} scored, {counts['relevant']} published")
     print(f"retrieved  {counts['retrieved']}")
-    print(f"images     {counts['images']} ({counts['unique_images']} unique)")
+    print(f"images     {counts['images']} embedded")
     print("files")
     for file in result.plan.files:
         print(f"  {file.path:<24} {file.size:>8} bytes  {file.sha256[:16]}...")
@@ -377,20 +376,12 @@ def _add_publish_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--repo", default=DEFAULT_REPO, help="destination dataset repository")
     parser.add_argument("--out", default=None, help="also write the planned files here for review")
     parser.add_argument(
-        "--pdf-root",
-        default=None,
-        help=(
-            "directory holding the retrieved PDFs (the `retrieve` output). Required whenever "
-            "the policy cleared any row for byte publication: the run fails rather than "
-            "publishing a card that claims bytes it does not carry."
-        ),
-    )
-    parser.add_argument(
         "--image-root",
         default=None,
         help=(
             "directory holding the extracted images (the `extract` output). Required whenever "
-            "any published image row points at bytes, for the same reason as --pdf-root."
+            "the policy cleared any image for republication: the images are embedded in the "
+            "published table, so without this the run would publish a smaller dataset."
         ),
     )
     parser.add_argument(

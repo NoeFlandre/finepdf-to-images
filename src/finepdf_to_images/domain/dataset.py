@@ -26,6 +26,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from finepdf_to_images.domain import policy
+from finepdf_to_images.domain.publication import PublicationPlan, PublishFile, validate_repo
 
 #: The single parquet the dataset consists of. The name follows the Hub's shard convention so the
 #: viewer and ``load_dataset`` recognise it without extra configuration.
@@ -148,6 +149,28 @@ def _schema_table() -> str:
         for name, kind, value, meaning in DATASET_FIELDS
     )
     return f"| column | type | meaning |\n| --- | --- | --- |\n{rows}"
+
+
+def build_plan(*, repo: str, card: str, table: bytes) -> PublicationPlan:
+    """The whole publication: a card and one parquet file.
+
+    Two files, where the previous layout published six plus 193 loose artifacts. The images are
+    embedded in the table rather than uploaded beside it, so there is nothing to join and nothing
+    to fetch separately -- which is what made the old layout unusable in the viewer.
+
+    Anything else already on the Hub is not named here, and a publication removes what it does not
+    contain (ADR-0014). That is how the old tree is cleaned up: not by a migration script, but by
+    publishing the dataset as it should be.
+    """
+    validate_repo(repo)
+    return PublicationPlan(
+        repo=repo,
+        files=(
+            PublishFile(CARD_FILE, card.encode("utf-8")),
+            PublishFile(DATASET_FILE, table),
+        ),
+        manifest={},
+    )
 
 
 def render_card(*, repo: str, source: Mapping[str, Any], sampling: Mapping[str, Any]) -> str:
