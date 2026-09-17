@@ -183,7 +183,6 @@ def build_document_rows(
     scored: Sequence[Mapping[str, Any]],
     retrieved: Sequence[Mapping[str, Any]],
     extracted: Sequence[Mapping[str, Any]],
-    max_text_bytes: int = MAX_DOCUMENT_TEXT_BYTES,
 ) -> list[dict[str, Any]]:
     """One published row per scored document, in shard order.
 
@@ -202,11 +201,6 @@ def build_document_rows(
         )
         for row in scored
     ]
-    total_text_bytes = sum(len(row["text"].encode("utf-8")) for row in rows)
-    if total_text_bytes > max_text_bytes:
-        raise PublicationError(
-            f"total published text bytes {total_text_bytes} exceeds cap of {max_text_bytes} bytes"
-        )
     return sorted(rows, key=lambda row: (row["row_index"] is None, row["row_index"]))
 
 
@@ -916,6 +910,29 @@ encoder that produced this run.
 
 
 # --------------------------------------------------------------------------- the minimal dataset
+
+
+def check_text_byte_cap(
+    rows: Sequence[Mapping[str, Any]], max_text_bytes: int = MAX_DOCUMENT_TEXT_BYTES
+) -> None:
+    """Bound the text this publication actually writes.
+
+    The cap guards against dumping unbounded text into a public dataset, and it has to measure
+    what is published to do that. It used to sum ``text`` over every **scored** row, which was
+    right when the old layout published all of them; once only documents that were retrieved and
+    yielded an image reach the Hub, that counted text the run never publishes -- a 5000-row sample
+    was refused over 75 MB of which almost all belonged to rejects.
+
+    Measured on the published rows, so the repetition of a document's text across its images (see
+    ADR-0016) is counted honestly rather than once per document.
+    """
+    total = sum(len(str(row.get("text", "")).encode("utf-8")) for row in rows)
+    if total > max_text_bytes:
+        raise PublicationError(
+            f"the {len(rows)} published row(s) carry {total} bytes of text, over the cap of "
+            f"{max_text_bytes}. Text repeats across a document's images, so this counts every "
+            "published row, not every distinct document."
+        )
 
 
 def check_inputs_match_extraction(
