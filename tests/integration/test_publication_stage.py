@@ -844,3 +844,52 @@ def test_a_run_that_extracted_nothing_publishes_an_empty_table_rather_than_faili
         apply=True,
     )
     assert _published_rows(hub) == []
+
+
+def test_the_card_reports_the_published_row_count_not_the_relevant_count() -> None:
+    """REGRESSION: the card said "52 of 1000" while the published table held 10 rows.
+
+    The two diverged the moment documents without an image stopped being published, and the card
+    took its number from the scorer rather than from the table it describes.
+    """
+    hub = FakeHub()
+    result = run_publish(
+        hub=hub,
+        repo="NoeFlandre/finepdf-to-images-poc",
+        select_manifest=SELECT_MANIFEST,
+        # Two relevant documents, one image: the scorer says 2, the table holds 1.
+        scored=[scored_row(0, relevant=True), scored_row(1, relevant=True)],
+        retrieved=[retrieved_row(0), retrieved_row(1)],
+        documents=[document_row(0), document_row(1)],
+        images=[image_row(0)],
+        extract_manifest=EXTRACT_MANIFEST,
+        image_root=_fixture_image_root(),
+        apply=True,
+    )
+    card = hub.files[CARD_FILE].decode()
+    published = len(_published_rows(hub))
+
+    assert result.plan.manifest["counts"]["relevant"] == 2
+    assert published == 1, "fixture must exercise the gap between relevant and published"
+    assert "1 document, each carrying at least one image" in card
+    assert "52 of 1000" not in card
+
+
+def test_the_card_does_not_claim_a_host_is_cleared_when_listing_no_images() -> None:
+    """The old sentence rendered as ``Only ``a`, `b`` is ...`` -- broken markup, wrong grammar,
+    and it named allow-listed hosts that contributed no image to the table."""
+    hub = FakeHub()
+    publish(hub, apply=True)
+    licensing = hub.files[CARD_FILE].decode().split("## Licensing")[1].split("## Use")[0]
+    assert "``" not in licensing, "no doubled backticks in the licensing paragraph"
+    assert "is separately confirmed as" not in licensing
+    assert "copyright remains with its original owner" in licensing
+
+
+def test_the_card_uses_a_singular_noun_for_a_single_row() -> None:
+    """It read "1 documents". A generated card is read by strangers; it should be literate."""
+    hub = FakeHub()
+    publish(hub, apply=True)
+    card = hub.files[CARD_FILE].decode()
+    assert "1 document, each carrying" in card
+    assert "1 documents" not in card

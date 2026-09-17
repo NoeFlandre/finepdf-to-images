@@ -1028,7 +1028,7 @@ def dataset_image_bytes(
 
 
 def build_dataset_plan(
-    *, repo: str, manifest: Mapping[str, Any], dataset: PublishFile
+    *, repo: str, manifest: Mapping[str, Any], dataset: PublishFile, published_rows: int
 ) -> PublicationPlan:
     """The whole publication: a card and a parquet, and nothing else.
 
@@ -1045,9 +1045,14 @@ def build_dataset_plan(
         raise PublicationError(
             f"the dataset must be published at {DATASET_FILE!r}, not {dataset.path!r}"
         )
-    card = render_dataset_card(manifest, repo)
+    card = render_dataset_card(manifest, repo, published_rows)
     files = (PublishFile(CARD_FILE, card.encode("utf-8")), dataset)
     return PublicationPlan(repo=repo, files=files, manifest=manifest)
+
+
+def _plural(count: int, noun: str) -> str:
+    """``noun`` agreeing with ``count``. The card read "1 documents" without it."""
+    return noun if count == 1 else f"{noun}s"
 
 
 def _dataset_schema_table() -> str:
@@ -1055,7 +1060,7 @@ def _dataset_schema_table() -> str:
     return f"| column | meaning |\n| --- | --- |\n{rows}"
 
 
-def render_dataset_card(manifest: Mapping[str, Any], repo: str) -> str:
+def render_dataset_card(manifest: Mapping[str, Any], repo: str, published_rows: int) -> str:
     """The card for the minimal dataset.
 
     The front matter is a machine-read contract, not prose: without a declared ``image`` dtype the
@@ -1070,8 +1075,6 @@ def render_dataset_card(manifest: Mapping[str, Any], repo: str) -> str:
     sampling = manifest["sampling"]
     counts = manifest["counts"]
     seed = sampling["seed"]
-    allowlist = manifest.get("allowlist") or ()
-    hosts = ", ".join(f"`{entry['host']}`" for entry in allowlist) or "none"
     return f"""---
 configs:
   - config_name: default
@@ -1107,7 +1110,9 @@ Agriculture-relevant documents sampled from one pinned shard of
 [HuggingFaceFW/finepdfs](https://huggingface.co/datasets/HuggingFaceFW/finepdfs): the source PDF,
 its extracted text, the images embedded in it, and the vocabulary terms that made it relevant.
 
-One row per relevant document ({counts["relevant"]} of {counts["documents"]} scored).
+{published_rows} {_plural(published_rows, "document")}, each carrying at least one image, drawn
+from {counts["documents"]} scored for agriculture relevance. A document with no image is not
+published.
 
 ## Schema
 
@@ -1131,9 +1136,8 @@ Text is published under **ODC-BY**, inherited from `{source["dataset"]}`, which 
 attributed.
 
 **Images are reproduced from their source PDFs and most carry no declared licence.** This is a
-research proof of concept, not a cleared redistribution. Only `{hosts}` is separately confirmed as
-free to redistribute; every other image is included because it appeared in a document the scorer
-selected, and its copyright remains with its original owner.
+research proof of concept, not a cleared redistribution. Each image is included because it
+appeared in a document the scorer selected; copyright remains with its original owner.
 
 **Takedown:** if you hold rights to anything published here and want it removed, open an issue at
 <https://github.com/NoeFlandre/finepdf-to-images/issues> and it will be taken down promptly. Each
