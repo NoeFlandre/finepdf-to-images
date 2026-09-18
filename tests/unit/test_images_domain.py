@@ -185,3 +185,72 @@ def test_sorting_is_total_and_stable(positions: list[tuple[int, int, int]]) -> N
     records = [record(document_row_index=d, page_index=p, image_index=i) for d, p, i in positions]
     keys = [sort_key(r) for r in sorted(records, key=sort_key)]
     assert keys == sorted(keys)
+
+
+# ------------------------------------------------------------------------------------ captions
+
+
+def test_captions_are_paired_with_a_pages_images_in_order() -> None:
+    """The nth image on a page takes the nth caption on that page.
+
+    Crude, and the docstring says so: pypdf lists a page's images without their placement, so
+    true nearest-caption matching would mean parsing the content stream's placement matrices.
+    Order-pairing is what fits the pilot.
+    """
+    from finepdf_to_images.domain.images import captions_on_page
+
+    text = "Figure 1. A wheat canopy at flowering.\nFigure 2. Leaf area index by plot."
+
+    assert captions_on_page(text) == (
+        "Figure 1. A wheat canopy at flowering.",
+        "Figure 2. Leaf area index by plot.",
+    )
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Figure 3: canopy closure at 45 days after sowing",
+        "Fig. 12 Root architecture of the drought treatment",
+        "Fig 2. Plot layout",
+        "Plate 4. Senescence scoring",
+        "Photo 1 - the trial site",
+        "Table 5. Grain yield by cultivar",
+    ],
+)
+def test_the_usual_caption_openings_are_recognised(line: str) -> None:
+    from finepdf_to_images.domain.images import captions_on_page
+
+    assert captions_on_page(line) == (line,)
+
+
+def test_a_page_that_names_no_figure_yields_no_caption() -> None:
+    """No caption is a valid outcome. Inventing one from the nearest prose would attach a
+    confident description to a picture nobody described."""
+    from finepdf_to_images.domain.images import captions_on_page
+
+    assert captions_on_page("Annual report of the regional office.") == ()
+
+
+def test_a_caption_is_bounded() -> None:
+    """A caption that runs into the body text stops being a caption."""
+    from finepdf_to_images.domain.images import MAX_CAPTION_CHARACTERS, captions_on_page
+
+    long_line = "Figure 1. " + "canopy " * 100
+    (caption,) = captions_on_page(long_line)
+
+    assert len(caption) <= MAX_CAPTION_CHARACTERS
+
+
+def test_a_figure_reference_inside_a_sentence_is_not_a_caption() -> None:
+    """ "as shown in Figure 2" is a reference to a figure, not the figure's own description."""
+    from finepdf_to_images.domain.images import captions_on_page
+
+    assert captions_on_page("Yields increased, as shown in Figure 2 and Table 1.") == ()
+
+
+def test_empty_page_text_yields_no_captions() -> None:
+    from finepdf_to_images.domain.images import captions_on_page
+
+    assert captions_on_page("") == ()
+    assert captions_on_page("   \n  ") == ()

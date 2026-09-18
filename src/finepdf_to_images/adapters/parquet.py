@@ -50,6 +50,7 @@ def _schema() -> Any:
         [
             pa.field("pdf_url", pa.string()),
             pa.field("image", image),
+            pa.field("caption", pa.string()),
             pa.field("text", pa.string()),
             pa.field("matched_terms", pa.list_(pa.string())),
         ]

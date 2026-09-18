@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import pytest
@@ -429,10 +430,14 @@ def _one_relevant_document() -> list[dict[str, Any]]:
 
 
 def test_the_same_image_on_several_pages_is_embedded_once() -> None:
-    """The old index emitted a row per occurrence; embedding that way repeats the picture."""
+    """The old index emitted a row per occurrence; embedding that way repeats the picture.
+
+    Two pages, not three: three is where `page_furniture_digests` stops treating a repeat as a
+    figure at all, and this test is about deduplication rather than about that rule.
+    """
     from finepdf_to_images.domain.publication import build_dataset_rows
 
-    repeated = [image_row(0, page=0), image_row(0, page=1), image_row(0, page=2)]
+    repeated = [image_row(0, page=0), image_row(0, page=1)]
     for image in repeated:
         image["sha256"] = sha256_hex(b"same")
     rows = build_dataset_rows(_one_relevant_document(), repeated, {sha256_hex(b"same"): b"same"})
@@ -604,3 +609,113 @@ def test_a_renamed_matched_terms_is_refused_rather_than_published_empty() -> Non
     ]
     with pytest.raises(PublicationError, match="missing 'matched_terms'"):
         build_document_rows(scored=scored, retrieved=[], extracted=[])
+
+
+# ------------------------------------------------------------------- page furniture, not figures
+
+
+def _digest(label: str) -> str:
+    """A real SHA-256, since `image_path` refuses anything else."""
+    return hashlib.sha256(label.encode()).hexdigest()
+
+
+def _image(digest: str, page: int, index: int = 0, row_id: str = "r1") -> dict[str, object]:
+    return {
+        "document_row_id": row_id,
+        "sha256": _digest(digest),
+        "page_index": page,
+        "image_index": index,
+        "mime": "image/png",
+    }
+
+
+def test_an_image_on_many_pages_is_furniture_and_publishes_no_row() -> None:
+    """A logo is drawn in the header of every page: same bytes, one digest, many pages.
+
+    Digest deduplication kept exactly one copy of it, which is still keeping the logo. The corpus
+    is meant to teach what agriculture looks like, and a university crest carrying a document's
+    agricultural terms is a confident example of the wrong thing.
+    """
+    from finepdf_to_images.domain.publication import build_dataset_rows
+
+    documents = [
+        {"row_id": "r1", "relevant": True, "url": "https://example.test/a.pdf", "text": "t"}
+    ]
+    images = [_image("logo", page) for page in range(5)] + [_image("figure", 2, index=1)]
+
+    rows = build_dataset_rows(documents, images, {_digest("logo"): b"L", _digest("figure"): b"F"})
+
+    assert [row["image"]["bytes"] for row in rows] == [b"F"]
+
+
+def test_an_image_on_two_pages_is_kept() -> None:
+    """A leaflet's one photograph can legitimately appear on both of its sides. The rule is for
+    furniture, and furniture is on every page, so the boundary leaves the ambiguous case alone."""
+    from finepdf_to_images.domain.publication import build_dataset_rows
+
+    documents = [
+        {"row_id": "r1", "relevant": True, "url": "https://example.test/a.pdf", "text": "t"}
+    ]
+    images = [_image("photo", 0), _image("photo", 1)]
+
+    rows = build_dataset_rows(documents, images, {_digest("photo"): b"P"})
+
+    assert [row["image"]["bytes"] for row in rows] == [b"P"]
+
+
+def test_the_same_digest_twice_on_one_page_is_not_furniture() -> None:
+    """Page spread is the signal, not occurrence count: a figure repeated on its own page is
+    still one figure."""
+    from finepdf_to_images.domain.publication import build_dataset_rows
+
+    documents = [
+        {"row_id": "r1", "relevant": True, "url": "https://example.test/a.pdf", "text": "t"}
+    ]
+    images = [_image("figure", 0, index=position) for position in range(4)]
+
+    rows = build_dataset_rows(documents, images, {_digest("figure"): b"F"})
+
+    assert [row["image"]["bytes"] for row in rows] == [b"F"]
+
+
+def test_page_spread_is_counted_within_a_document_not_across_the_run() -> None:
+    """Two documents that happen to share a stock photograph are not each other's furniture."""
+    from finepdf_to_images.domain.publication import build_dataset_rows
+
+    documents = [
+        {"row_id": "r1", "relevant": True, "url": "https://example.test/a.pdf", "text": "t"},
+        {"row_id": "r2", "relevant": True, "url": "https://example.test/b.pdf", "text": "t"},
+        {"row_id": "r3", "relevant": True, "url": "https://example.test/c.pdf", "text": "t"},
+    ]
+    images = [_image("stock", 0, row_id=row) for row in ("r1", "r2", "r3")]
+
+    rows = build_dataset_rows(documents, images, {_digest("stock"): b"S"})
+
+    assert [row["image"]["bytes"] for row in rows] == [b"S", b"S", b"S"]
+
+
+def test_a_published_row_carries_its_own_caption() -> None:
+    """The pair a foundation model trains on: this picture, and the line written about it.
+
+    `text` is the whole document, repeated once per image; it says what the document is about.
+    The caption says what the *picture* is.
+    """
+    from finepdf_to_images.domain.publication import build_dataset_rows
+
+    documents = [
+        {"row_id": "r1", "relevant": True, "url": "https://example.test/a.pdf", "text": "t"}
+    ]
+    images = [
+        dict(_image("fig1", 0, index=0), caption="Figure 1. A wheat canopy at flowering."),
+        dict(_image("fig2", 1, index=0), caption=""),
+    ]
+
+    rows = build_dataset_rows(documents, images, {_digest("fig1"): b"A", _digest("fig2"): b"B"})
+
+    assert [row["caption"] for row in rows] == ["Figure 1. A wheat canopy at flowering.", ""]
+
+
+def test_the_dataset_schema_declares_the_caption_column() -> None:
+    from finepdf_to_images.domain.publication import DATASET_FIELDS
+
+    assert "caption" in dict(DATASET_FIELDS)

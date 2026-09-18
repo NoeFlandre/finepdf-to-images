@@ -76,7 +76,25 @@ def test_the_card_declares_the_image_column_as_a_scalar_image() -> None:
     typed = {entry["name"]: entry for entry in features}
     assert typed["image"]["dtype"] == "image"
     assert "sequence" not in typed["image"]
-    assert set(typed) == {"pdf_url", "image", "text", "matched_terms"}
+    assert set(typed) == {"pdf_url", "image", "caption", "text", "matched_terms"}
+
+
+def test_the_front_matter_declares_exactly_the_published_columns() -> None:
+    """REGRESSION: the features block and `DATASET_FIELDS` drifted when `caption` was added.
+
+    The card's schema *table* is generated from `DATASET_FIELDS`; the front matter is written out
+    by hand, and nothing compared the two. A column the front matter omits is a column the Hub
+    does not type -- which for `image` is the difference between a thumbnail and a struct.
+    """
+    import yaml
+
+    from finepdf_to_images.domain.publication import DATASET_FIELDS
+
+    hub = FakeHub()
+    publish(hub, apply=True)
+    features = yaml.safe_load(_card(hub).split("---")[1])["dataset_info"]["features"]
+
+    assert [entry["name"] for entry in features] == [name for name, _ in DATASET_FIELDS]
 
 
 def test_the_card_is_deterministic() -> None:
@@ -130,6 +148,7 @@ def test_the_card_explains_the_relevance_rule_and_the_filters() -> None:
     is generated.
     """
     from finepdf_to_images.domain.images import MIN_IMAGE_SIDE
+    from finepdf_to_images.domain.publication.rows import MIN_PAGES_FOR_FURNITURE
     from finepdf_to_images.domain.scoring import vocabulary_summary
 
     hub = FakeHub()
@@ -140,10 +159,13 @@ def test_the_card_explains_the_relevance_rule_and_the_filters() -> None:
     assert "## How a row got here" in card
     assert f"**{vocabulary['surface_form_count']} phrases**" in card
     assert f"**{vocabulary['concept_count']} concepts**" in card
-    assert f"at least {vocabulary['thresholds']['min_groups']} different groups" in card
+    assert f"at least\n{vocabulary['thresholds']['min_groups']} different groups" in card
     assert "keyword filter over English text" in card
     assert "only covers English" in card
     assert f"**{MIN_IMAGE_SIDE}px on either side**" in card
+    assert f"**{MIN_PAGES_FOR_FURNITURE} or more pages**" in card
+    assert "at least one phenotyping concept" in card
+    assert "the figure caption written on the image's own page" in card
 
 
 def test_the_card_section_tracks_the_scorer_rather_than_repeating_it() -> None:

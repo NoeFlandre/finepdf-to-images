@@ -88,6 +88,7 @@ def _image_record(image: Any, row_id: str, row_index: int, pdf_sha256: str) -> I
         mime=image.mime,
         width=image.width,
         height=image.height,
+        caption=getattr(image, "caption", ""),
     )
 
 

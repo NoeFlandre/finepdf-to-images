@@ -196,11 +196,12 @@ def build_dataset_rows(
         rows.extend(
             {
                 "pdf_url": _text(document, "url"),
-                "image": image,
+                "image": embedded_image["image"],
+                "caption": embedded_image["caption"],
                 "text": _text(document, "text"),
                 "matched_terms": terms,
             }
-            for image in embedded
+            for embedded_image in embedded
         )
     return rows
 
@@ -219,6 +220,59 @@ def _images_by_row(images: Sequence[Mapping[str, Any]]) -> dict[str, list[Mappin
     return grouped
 
 
+#: How many distinct pages an image must appear on before it is page furniture rather than a
+#: figure.
+#:
+#: A figure is drawn once, on the page that discusses it. A logo, header rule, footer mark or
+#: watermark is drawn on every page. There is very little in between, which is what makes the
+#: rule cheap: it does not need a threshold chosen by taste.
+#:
+#: Two is deliberately below the line. A two-page leaflet's single photograph can legitimately
+#: appear on both sides, and a cover image repeated on a back page is not worth the false
+#: positive; three or more is furniture in practice.
+MIN_PAGES_FOR_FURNITURE = 3
+
+
+def page_furniture_digests(
+    images: Sequence[Mapping[str, Any]], min_pages: int = MIN_PAGES_FOR_FURNITURE
+) -> frozenset[str]:
+    """The digests of one document's images that are page furniture, not figures.
+
+    Counted over **distinct pages**, not occurrences: a figure repeated twice on its own page is
+    still one figure, while a mark appearing once per page on five pages is a header.
+
+    Scoped to one document. Two documents that happen to share a stock photograph are not each
+    other's furniture, and the caller passes one document's images.
+
+    Deduplication alone did not solve this. Identical bytes have one digest, so a logo was
+    already carried once per document -- and carrying it once is still carrying it. The corpus
+    is meant to show what agriculture looks like, and an institutional crest published with a
+    document's agricultural terms attached is a confident example of the wrong thing.
+    """
+    pages_by_digest: dict[str, set[int]] = {}
+    for image in images:
+        digest = str(image.get("sha256") or "")
+        if digest:
+            pages_by_digest.setdefault(digest, set()).add(_number(image, "page_index"))
+    return frozenset(digest for digest, pages in pages_by_digest.items() if len(pages) >= min_pages)
+
+
+def _is_embeddable(
+    digest: str,
+    *,
+    seen: frozenset[str] | set[str],
+    available: Mapping[str, bytes],
+    furniture: frozenset[str],
+) -> bool:
+    """Whether this occurrence earns a published row.
+
+    Four reasons not to, kept together so the loop reads as one decision: no digest at all, a
+    digest already carried, bytes that were never read, and an image the page-spread rule judged
+    furniture.
+    """
+    return bool(digest) and digest not in seen and digest in available and digest not in furniture
+
+
 def _embedded_images(
     images: Sequence[Mapping[str, Any]], available: Mapping[str, bytes]
 ) -> list[dict[str, Any]]:
@@ -226,20 +280,28 @@ def _embedded_images(
 
     The same bytes can appear on several pages, and the old index emitted a row per occurrence
     with ``duplicate_of`` pointing back at the first. Embedding repeats that way would hand a
-    reader the same picture several times, so a digest is carried once.
+    reader the same picture several times, so a digest is carried once -- and an image spread
+    across enough pages is dropped entirely, per :func:`page_furniture_digests`.
 
     ``{"bytes": ..., "path": ...}`` is the shape the Hub's ``Image`` feature decodes; the path is
     a label the viewer shows, not a file that has to exist in the repository.
     """
+    furniture = page_furniture_digests(images)
     embedded: list[dict[str, Any]] = []
     seen: set[str] = set()
     for image in images:
         digest = str(image.get("sha256") or "")
-        if digest in seen or digest not in available:
+        if not _is_embeddable(digest, seen=seen, available=available, furniture=furniture):
             continue
         seen.add(digest)
         embedded.append(
-            {"bytes": available[digest], "path": image_path(digest, str(image.get("mime") or ""))}
+            {
+                "image": {
+                    "bytes": available[digest],
+                    "path": image_path(digest, str(image.get("mime") or "")),
+                },
+                "caption": str(image.get("caption") or ""),
+            }
         )
     return embedded
 

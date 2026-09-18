@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 
 #: Bumped when the published row shape changes. Consumers index on these names.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 DEFAULT_REPO = "NoeFlandre/finepdf-to-images-poc"
 
@@ -52,6 +52,7 @@ DATASET_FILE = "data/train-00000-of-00001.parquet"
 DATASET_FIELDS: tuple[tuple[str, str], ...] = (
     ("pdf_url", "the source PDF this image came from"),
     ("image", "the image itself"),
+    ("caption", "the figure caption written on the image's page, when the page names one"),
     ("text", "text extracted from that PDF"),
     ("matched_terms", "the vocabulary terms that made the document relevant"),
 )

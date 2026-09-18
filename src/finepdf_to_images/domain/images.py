@@ -8,6 +8,7 @@ bytes.
 from __future__ import annotations
 
 import dataclasses
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -77,6 +78,8 @@ class ImageRecord:
     byte_size: int
     path: str
     duplicate_of: str | None = None
+    #: The figure caption on this image's page, or "" when the page names no figure.
+    caption: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -104,6 +107,43 @@ def is_publishable_size(width: int, height: int, min_side: int = MIN_IMAGE_SIDE)
     return min(width, height) >= min_side
 
 
+#: How much of a caption line is kept.
+#:
+#: A caption is one sentence about one picture. Past that, extracted PDF text has usually run
+#: from the caption into the body, and what follows describes the document rather than the image.
+MAX_CAPTION_CHARACTERS = 300
+
+#: A caption *opens* a line: "Figure 3.", "Fig. 12", "Plate 4", "Photo 1", "Table 5".
+#:
+#: Anchored at the start deliberately. "as shown in Figure 2" is a reference to a figure, not the
+#: figure's own description, and pairing that with a picture would attach a confident caption to
+#: an image nobody described.
+_CAPTION_OPENING = re.compile(
+    r"^\s*(?:Figure|Fig\.?|Plate|Photo|Table)\s*\d+\b",
+    re.IGNORECASE,
+)
+
+
+def captions_on_page(text: str) -> tuple[str, ...]:
+    """The figure captions written on one page, in reading order.
+
+    Used to pair a page's images with their descriptions: the nth image on a page takes the nth
+    caption. That pairing is crude and the caller says so -- pypdf lists a page's images without
+    their placement, so matching an image to the caption physically nearest it would mean parsing
+    the content stream's placement matrices. Order is what the pilot can rely on.
+
+    A page with no caption line yields nothing. Falling back to the surrounding prose would
+    produce a description that reads as if it were about the picture when nobody wrote it about
+    anything in particular.
+    """
+    captions = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and _CAPTION_OPENING.match(stripped):
+            captions.append(stripped[:MAX_CAPTION_CHARACTERS].rstrip())
+    return tuple(captions)
+
+
 def build_image_record(
     *,
     document_row_id: str,
@@ -115,6 +155,7 @@ def build_image_record(
     mime: str,
     width: int,
     height: int,
+    caption: str = "",
 ) -> ImageRecord:
     """Validate one extracted image and give it its identity.
 
@@ -148,6 +189,7 @@ def build_image_record(
         height=height,
         byte_size=len(data),
         path=image_path(digest, mime),
+        caption=caption,
     )
 
 

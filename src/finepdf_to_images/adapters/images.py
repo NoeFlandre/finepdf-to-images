@@ -11,12 +11,15 @@ page, which is correct but is not the same thing as "the figures in this documen
 from __future__ import annotations
 
 import io
+import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from finepdf_to_images.domain.images import ImageExtractionError
+from finepdf_to_images.domain.images import ImageExtractionError, captions_on_page
 
 #: Pillow format names mapped onto the media types the domain accepts.
+logger = logging.getLogger(__name__)
+
 _PIL_FORMAT_TO_MIME = {"PNG": "image/png", "JPEG": "image/jpeg", "TIFF": "image/tiff"}
 
 
@@ -30,6 +33,8 @@ class ExtractedImage:
     mime: str
     width: int
     height: int
+    #: The figure caption written on this image's page, or "" when the page names no figure.
+    caption: str = ""
 
 
 class ImageExtractor(Protocol):
@@ -109,12 +114,27 @@ class PypdfImageExtractor:
     def _walk(self, pages: list[Any]) -> list[ExtractedImage]:
         images: list[ExtractedImage] = []
         for page_index, page in enumerate(pages):
+            captions = self._captions(page, page_index)
             for image_index, name in enumerate(self._image_names(page, page_index)):
                 if len(images) >= self.max_images:
                     return images
                 image = self._image_at(page, name, page_index)
-                images.append(self._describe(image, page_index, image_index))
+                caption = captions[image_index] if image_index < len(captions) else ""
+                images.append(self._describe(image, page_index, image_index, caption))
         return images
+
+    def _captions(self, page: Any, page_index: int) -> tuple[str, ...]:
+        """The figure captions on one page, or none if its text cannot be read.
+
+        Text extraction is a separate failure surface from image extraction: a page whose fonts
+        pypdf cannot decode still has perfectly good images in it, and losing them to a missing
+        caption would be the wrong trade. Same rule the extractor already applies per image.
+        """
+        try:
+            return captions_on_page(page.extract_text() or "")
+        except Exception as error:  # one page's text, never the whole document
+            logger.debug("page %d text unreadable: %s", page_index, error)
+            return ()
 
     def _image_names(self, page: Any, page_index: int) -> list[Any]:
         """The *names* of a page's images, without decoding any of them.
@@ -150,7 +170,9 @@ class PypdfImageExtractor:
                 f"page {page_index} images unreadable: {type(error).__name__}: {error}"
             ) from error
 
-    def _describe(self, image: Any, page_index: int, image_index: int) -> ExtractedImage:
+    def _describe(
+        self, image: Any, page_index: int, image_index: int, caption: str = ""
+    ) -> ExtractedImage:
         """Read one image's bytes and its true dimensions.
 
         Dimensions come from the decoded image rather than from the PDF's ``/Width`` and
@@ -180,6 +202,7 @@ class PypdfImageExtractor:
             mime=mime,
             width=int(width),
             height=int(height),
+            caption=caption,
         )
 
 

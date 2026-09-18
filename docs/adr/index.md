@@ -23,3 +23,4 @@ us, including what it makes harder).
 - [ADR-0015 — Publish only rows that carry an image](0015-publish-only-rows-that-carry-an-image.md)
 - [ADR-0016 — One row per image](0016-one-row-per-image.md)
 - [ADR-0017 — Discard extracted images below 32px on a side](0017-discard-images-below-32px.md)
+- [ADR-0018 — Drop images that appear on many pages](0018-drop-images-that-appear-on-many-pages.md)

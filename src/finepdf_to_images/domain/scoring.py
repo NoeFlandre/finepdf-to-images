@@ -33,7 +33,7 @@ VOCABULARY_LANGUAGE = "eng_Latn"
 
 #: Bumped whenever the vocabulary or the thresholds change, so an earlier run's output stays
 #: interpretable instead of being silently reinterpreted under new rules.
-VOCABULARY_VERSION = 3
+VOCABULARY_VERSION = 4
 
 #: ``group -> concept -> surface forms``. Terms match as whole words or whole phrases after
 #: normalization, never as substrings — otherwise "wheat" matches "wheaten" and "goat" matches
@@ -133,6 +133,37 @@ VOCABULARY: Mapping[str, Mapping[str, frozenset[str]]] = {
         "shellfish": frozenset({"shellfish"}),
         "trawler": frozenset({"trawler", "trawlers"}),
     },
+    "phenotyping": {
+        "biomass": frozenset({"biomass", "above-ground biomass", "aboveground biomass"}),
+        "canopy": frozenset({"canopy", "canopies", "canopy cover", "canopy closure"}),
+        "chlorophyll": frozenset({"chlorophyll", "chlorophyll content"}),
+        "cultivar_trial": frozenset(
+            {"cultivar trial", "cultivar trials", "variety trial", "variety trials"}
+        ),
+        "field_trial": frozenset(
+            {"field trial", "field trials", "replicated trial", "replicate plots"}
+        ),
+        "germplasm": frozenset({"germplasm", "accession", "accessions"}),
+        "grain_yield": frozenset({"grain yield", "grain yields", "yield per plot"}),
+        "growth_stage": frozenset(
+            {"growth stage", "growth stages", "days after sowing", "days after planting"}
+        ),
+        "leaf_area": frozenset({"leaf area", "leaf area index", "lai"}),
+        "ndvi": frozenset({"ndvi", "normalized difference vegetation index"}),
+        "panicle": frozenset({"panicle", "panicles"}),
+        "phenology": frozenset({"phenology", "phenological"}),
+        "phenotype": frozenset({"phenotype", "phenotypes", "phenotyping", "phenotypic"}),
+        "plant_height": frozenset({"plant height", "plant heights"}),
+        "root_architecture": frozenset(
+            {"root architecture", "root system architecture", "rooting depth"}
+        ),
+        "senescence": frozenset({"senescence", "senescent"}),
+        "spectral": frozenset({"spectral reflectance", "hyperspectral", "multispectral"}),
+        "stress_response": frozenset(
+            {"drought stress", "heat stress", "water stress", "salinity stress"}
+        ),
+        "tiller": frozenset({"tiller", "tillers", "tillering"}),
+    },
     "farm_management": {
         "agricultural_extension": frozenset({"agricultural extension"}),
         "agricultural_policy": frozenset({"agricultural policy"}),
@@ -207,6 +238,18 @@ MIN_GROUPS = 2
 #: agronomy paper -- that a breadth rule alone would miss, without admitting a price list. Concepts,
 #: not surface forms: "farmer", "farmers" and "farming" are one concept mentioned three times.
 MIN_CONCEPTS_IN_ONE_GROUP = 3
+
+#: The group a document must touch to be relevant at all, whatever else it matches.
+#:
+#: Agriculture breadth alone admits documents that are genuinely agricultural and useless here: a
+#: pesticide label cleared on `agricultural`, `fungicide`, `grazing`, and an outdoors magazine on
+#: `goat`, `goats`, `shellfish`. Both are about agriculture; neither observes a plant. No threshold
+#: over an agriculture vocabulary separates them, because the vocabulary has no word for the thing
+#: that makes a document useful to this corpus -- a measured trait.
+#:
+#: So relevance is the conjunction: the agriculture rule establishes the context, and one
+#: phenotyping concept establishes the topic. The second condition is what the dataset is for.
+TOPIC_GROUP = "phenotyping"
 
 #: ``\w`` includes the underscore and digits, so ``[^\w]+`` left "soil_moisture" glued together and
 #: silently unmatchable. Extracted PDF text, table headers and code listings use underscores
@@ -365,16 +408,21 @@ def score(text: str, language: str = VOCABULARY_LANGUAGE) -> RelevanceResult:
     "this document is not about agriculture" is an ordinary answer, not an error.
 
     ``score`` is the number of distinct concept groups matched. A document is relevant when it
-    matches at least :data:`MIN_GROUPS` groups, **or** at least
-    :data:`MIN_CONCEPTS_IN_ONE_GROUP` distinct concepts inside a single group — the first rule
-    catches breadth, the second catches a narrowly focused document that breadth alone would miss.
+    shows agricultural context — at least :data:`MIN_GROUPS` groups, **or** at least
+    :data:`MIN_CONCEPTS_IN_ONE_GROUP` distinct concepts inside a single group, the first rule
+    catching breadth and the second a narrowly focused document that breadth alone would miss —
+    **and** it matches at least one concept in :data:`TOPIC_GROUP`.
+
+    The conjunction is deliberate. The context rule alone admitted product labels and hunting
+    magazines; the topic rule alone would admit any paper measuring biomass in a bioreactor.
     """
     surviving = _matched_forms(normalize(text))
     evidence = _evidence_for(surviving)
 
     groups = tuple(sorted(evidence))
     depth = max((len(concepts) for concepts in evidence.values()), default=0)
-    relevant = len(groups) >= MIN_GROUPS or _has_real_depth(evidence)
+    context = len(groups) >= MIN_GROUPS or _has_real_depth(evidence)
+    relevant = context and TOPIC_GROUP in evidence
 
     return RelevanceResult(
         relevant=relevant,
@@ -405,6 +453,7 @@ def vocabulary_summary() -> dict[str, Any]:
         "thresholds": {
             "min_groups": MIN_GROUPS,
             "min_concepts_in_one_group": MIN_CONCEPTS_IN_ONE_GROUP,
+            "requires_phenotyping_concept": True,
         },
         "weak_concepts": {group: sorted(c) for group, c in sorted(WEAK_CONCEPTS.items())},
         "excluded_ambiguous_terms": dict(sorted(EXCLUDED_AMBIGUOUS_TERMS.items())),

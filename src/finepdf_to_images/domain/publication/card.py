@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from finepdf_to_images.domain.images import MIN_IMAGE_SIDE
+from finepdf_to_images.domain.publication.rows import MIN_PAGES_FOR_FURNITURE
 from finepdf_to_images.domain.publication.schema import (
     DATASET_FIELDS,
     DATASET_FILE,
@@ -62,6 +63,8 @@ dataset_info:
       dtype: string
     - name: image
       dtype: image
+    - name: caption
+      dtype: string
     - name: text
       dtype: string
     - name: matched_terms
@@ -104,22 +107,38 @@ each row in `matched_terms`.
 The text is Unicode-normalised and casefolded, then matched against
 **{vocabulary["surface_form_count"]} phrases** grouped into
 **{vocabulary["concept_count"]} concepts** across {groups} groups
-(crops, soil, irrigation, livestock, fisheries, forestry, farm management).
+(crops, soil, irrigation, livestock, fisheries, forestry, farm management, phenotyping).
 Spellings of one idea — `fertilizer`/`fertiliser`, `farm`/`farmer`/`farming` — count as **one**
 concept, not several, so repetition cannot manufacture evidence.
 
-A document is **relevant** when it matches at least {thresholds["min_groups"]} different groups,
-or at least {thresholds["min_concepts_in_one_group"]} distinct concepts inside one. A single
-passing mention is not enough. Ambiguous words are excluded outright — `corn`, `crop`, `field`,
-`plant`, `yield` and `harvest` mean other things in most documents.
+A document is **relevant** when two things hold. First, agricultural context: it matches at least
+{thresholds["min_groups"]} different groups, or at least
+{thresholds["min_concepts_in_one_group"]} distinct concepts inside one — a single passing mention
+is not enough. Second, **at least one phenotyping concept** — a measured plant trait such as
+canopy cover, leaf area index, biomass, senescence or grain yield.
+
+The second condition is what this dataset is for, and the first alone did not give it. A pesticide
+label cleared on `agricultural`, `fungicide`, `grazing`; an outdoors magazine cleared on `goat`,
+`goats`, `shellfish`. Both are genuinely about agriculture and neither observes a plant. Ambiguous
+words are excluded outright — `corn`, `crop`, `field`, `plant`, `yield` and `harvest` mean other
+things in most documents.
 
 **What this misses:** it only covers English, so an agricultural document in another language is
 a miss rather than a negative, and a relevant document that never uses the vocabulary is invisible
 to it.
 
 Everything after selection is mechanical: only relevant documents are fetched, only real PDFs are
-kept, and images under **{MIN_IMAGE_SIDE}px on either side** are dropped — PDFs embed their table
-rules as images and those are not pictures. A document left with no image publishes no rows.
+kept, and two kinds of non-picture are dropped. Images under **{MIN_IMAGE_SIDE}px on either side**
+go, because PDFs embed their table rules as images. Images appearing on
+**{MIN_PAGES_FOR_FURNITURE} or more pages** of one document go too: a figure is drawn once, on the
+page that discusses it, while a logo or header mark is drawn on every page. A document left with no
+image publishes no rows.
+
+`caption` is the figure caption written on the image's own page — a line opening `Figure 3.`,
+`Fig. 12`, `Plate 4` and so on. The *n*th image on a page takes the *n*th caption on it: pypdf
+lists a page's images without their placement, so this is order-pairing rather than true
+nearest-caption matching, and it can mispair on a page whose figures are laid out out of order.
+A page naming no figure leaves `caption` empty rather than borrowing prose from nearby.
 
 ## Source
 
