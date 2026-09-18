@@ -13,6 +13,8 @@ build/
 *.egg-info/
 /data/
 /out/
+# Run artifacts: stage manifests, retrieved third-party PDFs, extracted images, build output.
+/state/
 .mutmut-cache
 mutants/
 .DS_Store
