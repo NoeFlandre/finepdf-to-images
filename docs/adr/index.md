@@ -26,3 +26,4 @@ us, including what it makes harder).
 - [ADR-0018 — Drop images that appear on many pages](0018-drop-images-that-appear-on-many-pages.md)
 - [ADR-0019 — Every published row is an image–caption pair](0019-every-row-is-an-image-caption-pair.md)
 - [ADR-0020 — A scanned document publishes no figures](0020-a-scanned-document-has-no-figures.md)
+- [ADR-0021 — Publish photographs, not line art](0021-publish-photographs-not-line-art.md)

@@ -433,3 +433,42 @@ def test_images_without_page_dimensions_are_never_judged_scans() -> None:
     ]
 
     assert scanned_document_pages(images) == frozenset()
+
+
+# ------------------------------------------------- a photograph is continuous tone, a chart is not
+
+
+def test_a_chart_is_not_a_photograph() -> None:
+    """Measured on all 39 published rows: line art scored 155-1,344 distinct colours, photographs
+    11,136-24,995, with a gap from 1,344 to 3,038 holding nothing.
+
+    A photograph is continuous tone -- every leaf and shadow is its own value. A chart is a
+    handful of ink colours on white, however elaborate it looks.
+    """
+    from finepdf_to_images.domain.images import is_continuous_tone
+
+    assert not is_continuous_tone(155)
+    assert not is_continuous_tone(1344)
+
+
+def test_a_photograph_is_continuous_tone() -> None:
+    from finepdf_to_images.domain.images import is_continuous_tone
+
+    assert is_continuous_tone(3038)
+    assert is_continuous_tone(24995)
+
+
+def test_an_image_with_no_colour_count_is_not_judged() -> None:
+    """An index written before the count existed cannot answer the question, and a filter that
+    guesses on missing data removes rows for no reason."""
+    from finepdf_to_images.domain.images import is_continuous_tone
+
+    assert is_continuous_tone(None)
+    assert is_continuous_tone(0)
+
+
+def test_the_threshold_sits_in_the_measured_gap() -> None:
+    """The constant is not a taste: it sits between the two populations, not inside either."""
+    from finepdf_to_images.domain.images import MIN_CONTINUOUS_TONE_COLOURS
+
+    assert 1344 < MIN_CONTINUOUS_TONE_COLOURS < 3038

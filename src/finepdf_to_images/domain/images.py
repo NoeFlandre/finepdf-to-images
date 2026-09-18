@@ -83,6 +83,9 @@ class ImageRecord:
     #: The page's dimensions in PDF points, or 0 when they could not be read.
     page_width: float = 0.0
     page_height: float = 0.0
+    #: Distinct RGB values at a pinned sample size, or 0 when not counted. Separates a
+    #: photograph from a chart; see :data:`MIN_CONTINUOUS_TONE_COLOURS`.
+    distinct_colours: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -290,6 +293,38 @@ def _positive(value: Any) -> float:
     return float(value) if isinstance(value, (int, float)) and value > 0 else 0.0
 
 
+#: How many distinct colours an image must hold to be a photograph rather than line art.
+#:
+#: Measured on all 39 rows of the first image-caption release, counting distinct RGB values after
+#: thumbnailing to :data:`COLOUR_SAMPLE_SIDE`:
+#:
+#: ===================================== ==================
+#: line-art plots, box plots, schematics 155 - 1,344
+#: photographs (grains, field sites)     11,136 - 24,995
+#: ===================================== ==================
+#:
+#: Nothing fell between 1,344 and 3,038, so the threshold sits in a gap rather than inside either
+#: population. A photograph is continuous tone -- every leaf and every shadow is its own value --
+#: while a chart is a handful of ink colours on white, however elaborate it looks.
+#:
+#: Saturation is the metric this looks like it should be, and it fails: a coloured bar chart
+#: scores higher than a genuine specimen photograph. Colour count separates the same pair by two
+#: orders of magnitude.
+MIN_CONTINUOUS_TONE_COLOURS = 2_000
+
+
+def is_continuous_tone(distinct_colours: int | None) -> bool:
+    """Whether an image is a photograph rather than a chart, from its colour count.
+
+    ``None`` and ``0`` mean the count is unknown -- an index written before it was recorded --
+    and the answer is yes, because a filter that guesses on missing data removes rows for no
+    reason. The rule takes effect on re-extraction, like the page dimensions before it.
+    """
+    if not distinct_colours:
+        return True
+    return distinct_colours >= MIN_CONTINUOUS_TONE_COLOURS
+
+
 def build_image_record(
     *,
     document_row_id: str,
@@ -304,6 +339,7 @@ def build_image_record(
     caption: str = "",
     page_width: float = 0.0,
     page_height: float = 0.0,
+    distinct_colours: int = 0,
 ) -> ImageRecord:
     """Validate one extracted image and give it its identity.
 
@@ -340,6 +376,7 @@ def build_image_record(
         caption=caption,
         page_width=page_width,
         page_height=page_height,
+        distinct_colours=distinct_colours,
     )
 
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from finepdf_to_images.domain.images import MIN_IMAGE_SIDE
+from finepdf_to_images.domain.images import MIN_CONTINUOUS_TONE_COLOURS, MIN_IMAGE_SIDE
 from finepdf_to_images.domain.publication.rows import (
     MIN_DOCUMENTS_FOR_BOILERPLATE,
     MIN_PAGES_FOR_FURNITURE,
@@ -149,7 +149,11 @@ Four kinds of non-picture are dropped before that:
 - images appearing in **{MIN_DOCUMENTS_FOR_BOILERPLATE} or more documents** — a publisher's badge
   rather than anyone's figure;
 - every image from a document that is a **scan of pages** rather than a paper with figures in it:
-  one big image per page, page-shaped and alone on its page.
+  one big image per page, page-shaped and alone on its page;
+- **line art** — anything holding fewer than **{MIN_CONTINUOUS_TONE_COLOURS:,} distinct colours**
+  at a 200px sample. A photograph is continuous tone, every leaf its own value; a chart is a few
+  inks on white. Measured over a full release, charts held 155 to 1,344 colours and
+  photographs 11,136 to 24,995, with nothing in between. This dataset is photographs.
 
 ## Source
 

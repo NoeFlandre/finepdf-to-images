@@ -171,6 +171,7 @@ def test_the_image_record_keys_are_exact() -> None:
         "caption",
         "page_width",
         "page_height",
+        "distinct_colours",
     }
 
 

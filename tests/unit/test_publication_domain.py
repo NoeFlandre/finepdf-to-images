@@ -90,6 +90,7 @@ def image_row(index: int, page: int = 0, position: int = 0) -> dict[str, Any]:
         "height": 4,
         "byte_size": 99,
         "caption": f"Figure {position + 1}. A canopy.",
+        "distinct_colours": 15_000,
         "duplicate_of": None,
     }
 
@@ -822,3 +823,35 @@ def test_a_scanned_document_publishes_no_rows() -> None:
     rows = build_dataset_rows(documents, images, {_digest(f"page{p}"): b"P" for p in range(5)})
 
     assert rows == []
+
+
+def test_line_art_publishes_no_row() -> None:
+    """A box plot of disease incidence is a figure, and it is not what a model learns a plant
+    from. Measured separation: charts 155-1,344 distinct colours, photographs 11,136-24,995."""
+    from finepdf_to_images.domain.publication import build_dataset_rows
+
+    documents = [
+        {"row_id": "r1", "relevant": True, "url": "https://example.test/a.pdf", "text": "t"}
+    ]
+    images = [
+        dict(_image("chart", 0), caption="Figure 1. Disease incidence.", distinct_colours=216),
+        dict(_image("photo", 1), caption="Figure 2. A wheat canopy.", distinct_colours=15_000),
+    ]
+
+    rows = build_dataset_rows(documents, images, {_digest("chart"): b"C", _digest("photo"): b"P"})
+
+    assert [row["caption"] for row in rows] == ["Figure 2. A wheat canopy."]
+
+
+def test_an_image_with_no_colour_count_is_still_published() -> None:
+    """The count arrived with this rule; an index without it is not judged by it."""
+    from finepdf_to_images.domain.publication import build_dataset_rows
+
+    documents = [
+        {"row_id": "r1", "relevant": True, "url": "https://example.test/a.pdf", "text": "t"}
+    ]
+    images = [dict(_image("older", 0), caption="Figure 1. A canopy.")]
+
+    rows = build_dataset_rows(documents, images, {_digest("older"): b"O"})
+
+    assert len(rows) == 1

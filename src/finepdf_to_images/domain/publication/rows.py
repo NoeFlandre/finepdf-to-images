@@ -11,7 +11,11 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from finepdf_to_images.domain import policy
-from finepdf_to_images.domain.images import image_path, scanned_document_pages
+from finepdf_to_images.domain.images import (
+    image_path,
+    is_continuous_tone,
+    scanned_document_pages,
+)
 from finepdf_to_images.domain.publication.fields import (
     _flag,
     _index,
@@ -304,14 +308,33 @@ def _is_publishable(
     Kept together so the loop reads as one decision: no digest at all, a digest already carried,
     bytes that were never read, an image one of the exclusion rules judged not a figure, or no
     caption -- and without a caption a row is a picture with a topic attached rather than the pair
-    this dataset is made of (ADR-0019).
+    this dataset is made of (ADR-0019) -- or line art rather than a photograph (ADR-0021).
     """
-    return (
-        bool(digest)
-        and digest not in seen
-        and digest in available
-        and digest not in furniture
-        and bool(str(image.get("caption") or "").strip())
+    return _is_carriable(
+        digest, seen=seen, available=available, furniture=furniture
+    ) and _is_wanted(image)
+
+
+def _is_carriable(
+    digest: str,
+    *,
+    seen: frozenset[str] | set[str],
+    available: Mapping[str, bytes],
+    furniture: frozenset[str],
+) -> bool:
+    """Whether this occurrence can be carried: a digest, once, whose bytes we hold and kept."""
+    return bool(digest) and digest not in seen and digest in available and digest not in furniture
+
+
+def _is_wanted(image: Mapping[str, Any]) -> bool:
+    """Whether this is the kind of picture the dataset is made of.
+
+    A caption, because without one a row is a picture with a topic attached rather than a pair
+    (ADR-0019); and continuous tone, because a box plot teaches a model nothing about a plant
+    (ADR-0021).
+    """
+    return bool(str(image.get("caption") or "").strip()) and is_continuous_tone(
+        image.get("distinct_colours")
     )
 
 

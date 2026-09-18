@@ -147,7 +147,7 @@ def test_the_card_explains_the_relevance_rule_and_the_filters() -> None:
     rule cannot drift from the one that selected the rows -- the same reason the rest of the card
     is generated.
     """
-    from finepdf_to_images.domain.images import MIN_IMAGE_SIDE
+    from finepdf_to_images.domain.images import MIN_CONTINUOUS_TONE_COLOURS, MIN_IMAGE_SIDE
     from finepdf_to_images.domain.publication.rows import MIN_PAGES_FOR_FURNITURE
     from finepdf_to_images.domain.scoring import vocabulary_summary
 
@@ -167,6 +167,7 @@ def test_the_card_explains_the_relevance_rule_and_the_filters() -> None:
     assert "at least one phenotyping concept" in card
     assert "Every row is an image and the caption its author wrote for it" in card
     assert "scan of pages" in card
+    assert f"**{MIN_CONTINUOUS_TONE_COLOURS:,} distinct colours**" in card
 
 
 def test_the_card_section_tracks_the_scorer_rather_than_repeating_it() -> None:

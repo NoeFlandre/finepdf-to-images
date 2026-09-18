@@ -20,6 +20,13 @@ from finepdf_to_images.domain.images import ImageExtractionError, captions_on_pa
 #: Pillow format names mapped onto the media types the domain accepts.
 logger = logging.getLogger(__name__)
 
+#: The bound each image is thumbnailed to before its colours are counted.
+#:
+#: Pinned so the count is a property of the picture rather than of its resolution: the same figure
+#: scanned at 300dpi and at 600dpi must land on the same side of the threshold. 200px is large
+#: enough to keep a photograph's tonal range and small enough that counting is trivial.
+COLOUR_SAMPLE_SIDE = 200
+
 _PIL_FORMAT_TO_MIME = {"PNG": "image/png", "JPEG": "image/jpeg", "TIFF": "image/tiff"}
 
 
@@ -39,6 +46,9 @@ class ExtractedImage:
     #: photograph *of* the page: a scan reproduces the page's proportions.
     page_width: float = 0.0
     page_height: float = 0.0
+    #: Distinct RGB values at a pinned sample size, so the domain can tell a photograph from a
+    #: chart without decoding anything itself.
+    distinct_colours: int = 0
 
 
 class ImageExtractor(Protocol):
@@ -212,6 +222,7 @@ class PypdfImageExtractor:
                 f"{type(error).__name__}: {error}"
             ) from error
 
+        colours = _distinct_colours(decoded)
         mime = _PIL_FORMAT_TO_MIME.get(fmt.upper())
         if mime is None:
             raise ImageExtractionError(
@@ -227,7 +238,28 @@ class PypdfImageExtractor:
             caption=caption,
             page_width=page_size[0],
             page_height=page_size[1],
+            distinct_colours=colours,
         )
+
+
+def _distinct_colours(decoded: Any) -> int:
+    """How many distinct RGB values an image holds, at a pinned sample size.
+
+    A photograph is continuous tone and a chart is a few inks on white, which is what separates
+    them; see ``MIN_CONTINUOUS_TONE_COLOURS`` in the domain.
+
+    Counted here rather than in the domain because it needs decoded pixels, and Pillow is banned
+    from the domain by the architecture check. A failure to count returns 0, which the domain
+    reads as "unknown" and lets through.
+    """
+    try:
+        sample = decoded.convert("RGB")
+        sample.thumbnail((COLOUR_SAMPLE_SIDE, COLOUR_SAMPLE_SIDE))
+        # getcolors rather than set(getdata()): exact, faster, and not deprecated. The cap is
+        # above any 200px sample's possible palette, so it never returns None here.
+        return len(sample.getcolors(maxcolors=COLOUR_SAMPLE_SIDE * COLOUR_SAMPLE_SIDE) or ())
+    except Exception:  # one image's palette, never the document
+        return 0
 
 
 @dataclass(frozen=True, slots=True)

@@ -14,7 +14,7 @@ from typing import Any
 
 from finepdf_to_images.domain import policy
 from finepdf_to_images.domain.allowlist import allowlist_summary
-from finepdf_to_images.domain.images import scanned_document_pages
+from finepdf_to_images.domain.images import is_continuous_tone, scanned_document_pages
 from finepdf_to_images.domain.publication.card import render_dataset_card
 from finepdf_to_images.domain.publication.rows import (
     cross_document_digests,
@@ -144,15 +144,24 @@ def _excluded_counts(images: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     or starts removing far more than intended -- is visible in the manifest instead of being
     discovered by looking at the dataset.
     """
-    captioned = {row["sha256"] for row in images if str(row.get("caption") or "").strip()}
-    every = {row["sha256"] for row in images}
+    captioned = _digests(images, lambda row: bool(str(row.get("caption") or "").strip()))
     return {
         "captioned_images": len(captioned),
-        "uncaptioned_images": len(every - captioned),
+        "uncaptioned_images": len(_digests(images, lambda _row: True) - captioned),
         "page_furniture": len(_per_document_union(images, page_furniture_digests)),
         "scanned_pages": len(_per_document_union(images, scanned_document_pages)),
         "cross_document_boilerplate": len(cross_document_digests(images)),
+        "line_art": len(
+            _digests(images, lambda row: not is_continuous_tone(row.get("distinct_colours")))
+        ),
     }
+
+
+def _digests(
+    images: Sequence[Mapping[str, Any]], matches: Callable[[Mapping[str, Any]], bool]
+) -> set[str]:
+    """The distinct digests of the images a predicate selects."""
+    return {str(row["sha256"]) for row in images if matches(row)}
 
 
 def _per_document_union(

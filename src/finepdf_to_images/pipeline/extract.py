@@ -91,6 +91,7 @@ def _image_record(image: Any, row_id: str, row_index: int, pdf_sha256: str) -> I
         caption=getattr(image, "caption", ""),
         page_width=getattr(image, "page_width", 0.0),
         page_height=getattr(image, "page_height", 0.0),
+        distinct_colours=getattr(image, "distinct_colours", 0),
     )
 
 
