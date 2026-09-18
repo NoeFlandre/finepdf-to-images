@@ -169,6 +169,8 @@ def test_the_image_record_keys_are_exact() -> None:
         "path",
         "duplicate_of",
         "caption",
+        "page_width",
+        "page_height",
     }
 
 

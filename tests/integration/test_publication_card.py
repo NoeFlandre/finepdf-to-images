@@ -165,7 +165,8 @@ def test_the_card_explains_the_relevance_rule_and_the_filters() -> None:
     assert f"**{MIN_IMAGE_SIDE}px on either side**" in card
     assert f"**{MIN_PAGES_FOR_FURNITURE} or more pages**" in card
     assert "at least one phenotyping concept" in card
-    assert "the figure caption written on the image's own page" in card
+    assert "Every row is an image and the caption its author wrote for it" in card
+    assert "scan of pages" in card
 
 
 def test_the_card_section_tracks_the_scorer_rather_than_repeating_it() -> None:

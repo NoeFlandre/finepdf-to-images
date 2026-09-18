@@ -24,3 +24,5 @@ us, including what it makes harder).
 - [ADR-0016 — One row per image](0016-one-row-per-image.md)
 - [ADR-0017 — Discard extracted images below 32px on a side](0017-discard-images-below-32px.md)
 - [ADR-0018 — Drop images that appear on many pages](0018-drop-images-that-appear-on-many-pages.md)
+- [ADR-0019 — Every published row is an image–caption pair](0019-every-row-is-an-image-caption-pair.md)
+- [ADR-0020 — A scanned document publishes no figures](0020-a-scanned-document-has-no-figures.md)

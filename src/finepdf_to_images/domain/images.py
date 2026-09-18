@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from finepdf_to_images.domain.serialization import sha256_hex
@@ -80,6 +80,9 @@ class ImageRecord:
     duplicate_of: str | None = None
     #: The figure caption on this image's page, or "" when the page names no figure.
     caption: str = ""
+    #: The page's dimensions in PDF points, or 0 when they could not be read.
+    page_width: float = 0.0
+    page_height: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -123,6 +126,32 @@ _CAPTION_OPENING = re.compile(
     re.IGNORECASE,
 )
 
+#: A line opening like a caption but continuing with a reporting verb is a sentence *about* a
+#: figure: "Figure 8 shows the reduction of fuel". One such line was published as a caption while
+#: the same document carried the real "Figure 8. Reduction of fuel consumption...".
+#:
+#: Checked instead of requiring punctuation after the number, because "FIGURE 1 Photos of the
+#: obligate parasitic weeds" is a genuine caption with no separator at all -- requiring one would
+#: cost more captions than it saves.
+_REPORTING_VERB = re.compile(
+    r"^\s*(?:Figure|Fig\.?|Plate|Photo|Table)\s*\d+\s+"
+    r"(?:shows?|illustrates?|presents?|gives?|depicts?|displays?|summari[sz]es?|lists?|"
+    r"reports?|compares?|indicates?)\b",
+    re.IGNORECASE,
+)
+
+#: How many lines after the opening may be joined onto a caption.
+#:
+#: A caption wraps over two or three lines; something still running after that is body text the
+#: layout happened to place below the figure.
+MAX_CAPTION_LINES = 3
+
+#: A continuation line must look like prose. A multi-column layout interleaves text from
+#: unrelated regions, so the line below a caption can be a stray dash, a page number, or the
+#: first line of the next column -- appending those makes a caption confidently wrong rather than
+#: merely short.
+_PROSE = re.compile(r"[A-Za-z]{3}")
+
 
 def captions_on_page(text: str) -> tuple[str, ...]:
     """The figure captions written on one page, in reading order.
@@ -132,16 +161,133 @@ def captions_on_page(text: str) -> tuple[str, ...]:
     their placement, so matching an image to the caption physically nearest it would mean parsing
     the content stream's placement matrices. Order is what the pilot can rely on.
 
+    A caption is a sentence, not a line: the PDF's line breaks fall wherever the layout put them,
+    so continuation lines are joined until the sentence ends, another caption starts, the text
+    stops looking like prose, or the bounds run out.
+
     A page with no caption line yields nothing. Falling back to the surrounding prose would
     produce a description that reads as if it were about the picture when nobody wrote it about
     anything in particular.
     """
-    captions = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped and _CAPTION_OPENING.match(stripped):
-            captions.append(stripped[:MAX_CAPTION_CHARACTERS].rstrip())
+    lines = [line.strip() for line in text.splitlines()]
+    captions: list[str] = []
+    for index, line in enumerate(lines):
+        if line and _CAPTION_OPENING.match(line) and not _REPORTING_VERB.match(line):
+            captions.append(_joined_caption(line, lines[index + 1 :]))
     return tuple(captions)
+
+
+def _joined_caption(opening: str, following: Sequence[str]) -> str:
+    """One caption, continued across the line breaks its layout imposed."""
+    caption = opening
+    for line in following[:MAX_CAPTION_LINES]:
+        if _ends_a_caption(caption) or not _continues_a_caption(line):
+            break
+        caption = f"{caption} {line}"
+    return caption[:MAX_CAPTION_CHARACTERS].rstrip()
+
+
+def _ends_a_caption(caption: str) -> bool:
+    return caption.rstrip().endswith((".", "?", "!")) or len(caption) >= MAX_CAPTION_CHARACTERS
+
+
+def _continues_a_caption(line: str) -> bool:
+    return bool(line) and not _CAPTION_OPENING.match(line) and bool(_PROSE.search(line))
+
+
+#: How close an image's aspect ratio must be to its page's to count as a scan of that page.
+_PAGE_ASPECT_TOLERANCE = 0.10
+
+#: How large a page-shaped image must be before it can be a scan rather than a thumbnail.
+_MIN_PAGE_SCAN_SIDE = 600
+
+#: What share of a document's images must look like scanned pages, and how many, before the
+#: document is judged scanned throughout.
+#:
+#: Both conditions matter. The share is what makes it a pattern rather than a coincidence; the
+#: count is what protects the single full-width table on a portrait page, which has roughly its
+#: page's proportions and is a perfectly good figure. Measured on a real run: the scanned
+#: document was 18 of 20 page-like, ordinary documents were 0 of 4, 0 of 9, 0 of 16.
+_SCANNED_DOCUMENT_SHARE = 0.5
+_MIN_SCANNED_PAGES = 3
+
+
+def scanned_document_pages(images: Sequence[Mapping[str, Any]]) -> frozenset[str]:
+    """The digests of one document's images, when that document is a scan rather than a paper.
+
+    A scanned PDF has one big image per page, and extracting it is correct but is not the same
+    thing as extracting the figures in a document -- the extractor's own docstring says so. Those
+    images pass every other filter: they are large, unique, and not repeated across pages.
+
+    Judged per document rather than per image because a scanned document is scanned throughout.
+    The single page-shaped image in an ordinary document is a full-width table or a full-page
+    figure, and dropping it loses exactly the kind of row this corpus wants.
+
+    An index that does not record page dimensions cannot answer the question, and this returns
+    nothing rather than guessing: the rule needs a re-extraction to take effect.
+    """
+    if not _looks_scanned(len(_page_scans(images)), len(images)):
+        return frozenset()
+    return frozenset(str(image.get("sha256") or "") for image in images)
+
+
+def _page_scans(images: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """The images that look like photographs of the page they sit on."""
+    alone_on_page = _pages_holding_one_image(images)
+    return [
+        image
+        for image in images
+        if image.get("page_index") in alone_on_page and _is_page_shaped(image)
+    ]
+
+
+def _looks_scanned(page_like: int, total: int) -> bool:
+    """Whether a document's images are page scans as a pattern rather than as a coincidence."""
+    return page_like >= _MIN_SCANNED_PAGES and page_like >= _SCANNED_DOCUMENT_SHARE * total
+
+
+def _pages_holding_one_image(images: Sequence[Mapping[str, Any]]) -> frozenset[Any]:
+    """The pages carrying exactly one image.
+
+    A scanned page *is* one image. Several images on a page means a laid-out page with figures on
+    it, whatever their shapes.
+    """
+    per_page: dict[Any, int] = {}
+    for image in images:
+        page = image.get("page_index")
+        per_page[page] = per_page.get(page, 0) + 1
+    return frozenset(page for page, count in per_page.items() if count == 1)
+
+
+def _is_page_shaped(image: Mapping[str, Any]) -> bool:
+    """Whether one image looks like a photograph of the page it sits on."""
+    dimensions = _dimensions(image)
+    if dimensions is None:
+        return False
+    page_aspect, image_aspect, long_side = dimensions
+    return (
+        long_side >= _MIN_PAGE_SCAN_SIDE
+        and abs(image_aspect - page_aspect) / page_aspect <= _PAGE_ASPECT_TOLERANCE
+    )
+
+
+def _dimensions(image: Mapping[str, Any]) -> tuple[float, float, float] | None:
+    """The page aspect, the image aspect and the image's long side, or None if any is missing.
+
+    An index written before page dimensions were recorded cannot answer the question, and a
+    filter that guesses on missing data removes rows for no reason.
+    """
+    page_width, page_height, width, height = (
+        _positive(image.get(key)) for key in ("page_width", "page_height", "width", "height")
+    )
+    if not (page_width and page_height and width and height):
+        return None
+    return page_width / page_height, width / height, max(width, height)
+
+
+def _positive(value: Any) -> float:
+    """A usable dimension, or 0 for anything that is not one."""
+    return float(value) if isinstance(value, (int, float)) and value > 0 else 0.0
 
 
 def build_image_record(
@@ -156,6 +302,8 @@ def build_image_record(
     width: int,
     height: int,
     caption: str = "",
+    page_width: float = 0.0,
+    page_height: float = 0.0,
 ) -> ImageRecord:
     """Validate one extracted image and give it its identity.
 
@@ -190,6 +338,8 @@ def build_image_record(
         byte_size=len(data),
         path=image_path(digest, mime),
         caption=caption,
+        page_width=page_width,
+        page_height=page_height,
     )
 
 

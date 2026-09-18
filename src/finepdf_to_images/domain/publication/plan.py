@@ -9,12 +9,17 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from finepdf_to_images.domain import policy
 from finepdf_to_images.domain.allowlist import allowlist_summary
+from finepdf_to_images.domain.images import scanned_document_pages
 from finepdf_to_images.domain.publication.card import render_dataset_card
+from finepdf_to_images.domain.publication.rows import (
+    cross_document_digests,
+    page_furniture_digests,
+)
 from finepdf_to_images.domain.publication.schema import (
     _REPO_RE,
     CARD_FILE,
@@ -128,7 +133,40 @@ def _counts(
         "unique_images": len({row["sha256"] for row in images}),
         "published_images": len(_published_paths(images, "image")),
         "published_pdfs": len(_published_paths(documents, "pdf")),
+        **_excluded_counts(images),
     }
+
+
+def _excluded_counts(images: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """How many images each exclusion rule accounts for.
+
+    Reported separately rather than inferred from the row count, so a rule that stops firing --
+    or starts removing far more than intended -- is visible in the manifest instead of being
+    discovered by looking at the dataset.
+    """
+    captioned = {row["sha256"] for row in images if str(row.get("caption") or "").strip()}
+    every = {row["sha256"] for row in images}
+    return {
+        "captioned_images": len(captioned),
+        "uncaptioned_images": len(every - captioned),
+        "page_furniture": len(_per_document_union(images, page_furniture_digests)),
+        "scanned_pages": len(_per_document_union(images, scanned_document_pages)),
+        "cross_document_boilerplate": len(cross_document_digests(images)),
+    }
+
+
+def _per_document_union(
+    images: Sequence[Mapping[str, Any]],
+    rule: Callable[[Sequence[Mapping[str, Any]]], frozenset[str]],
+) -> set[str]:
+    """Apply a per-document rule to each document and union what it excludes."""
+    by_document: dict[str, list[Mapping[str, Any]]] = {}
+    for image in images:
+        by_document.setdefault(str(image.get("document_row_id")), []).append(image)
+    excluded: set[str] = set()
+    for owned in by_document.values():
+        excluded |= rule(owned)
+    return excluded
 
 
 def _published_paths(rows: Sequence[Mapping[str, Any]], field: str) -> set[str]:

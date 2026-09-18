@@ -35,6 +35,10 @@ class ExtractedImage:
     height: int
     #: The figure caption written on this image's page, or "" when the page names no figure.
     caption: str = ""
+    #: The page's own dimensions, in PDF points. Kept so the domain can tell a figure from a
+    #: photograph *of* the page: a scan reproduces the page's proportions.
+    page_width: float = 0.0
+    page_height: float = 0.0
 
 
 class ImageExtractor(Protocol):
@@ -115,13 +119,26 @@ class PypdfImageExtractor:
         images: list[ExtractedImage] = []
         for page_index, page in enumerate(pages):
             captions = self._captions(page, page_index)
+            page_size = self._page_size(page)
             for image_index, name in enumerate(self._image_names(page, page_index)):
                 if len(images) >= self.max_images:
                     return images
                 image = self._image_at(page, name, page_index)
                 caption = captions[image_index] if image_index < len(captions) else ""
-                images.append(self._describe(image, page_index, image_index, caption))
+                images.append(self._describe(image, page_index, image_index, caption, page_size))
         return images
+
+    def _page_size(self, page: Any) -> tuple[float, float]:
+        """The page's dimensions in points, or zeroes when the box cannot be read.
+
+        Zeroes are a usable answer: the domain treats a missing page size as "cannot tell" and
+        never judges such an image a scan, rather than guessing from the image alone.
+        """
+        try:
+            box = page.mediabox
+            return float(box.width), float(box.height)
+        except Exception:  # a malformed box is one page's geometry, never the document
+            return 0.0, 0.0
 
     def _captions(self, page: Any, page_index: int) -> tuple[str, ...]:
         """The figure captions on one page, or none if its text cannot be read.
@@ -171,7 +188,12 @@ class PypdfImageExtractor:
             ) from error
 
     def _describe(
-        self, image: Any, page_index: int, image_index: int, caption: str = ""
+        self,
+        image: Any,
+        page_index: int,
+        image_index: int,
+        caption: str = "",
+        page_size: tuple[float, float] = (0.0, 0.0),
     ) -> ExtractedImage:
         """Read one image's bytes and its true dimensions.
 
@@ -203,6 +225,8 @@ class PypdfImageExtractor:
             width=int(width),
             height=int(height),
             caption=caption,
+            page_width=page_size[0],
+            page_height=page_size[1],
         )
 
 

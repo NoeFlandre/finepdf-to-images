@@ -15,7 +15,10 @@ from collections.abc import Mapping
 from typing import Any
 
 from finepdf_to_images.domain.images import MIN_IMAGE_SIDE
-from finepdf_to_images.domain.publication.rows import MIN_PAGES_FOR_FURNITURE
+from finepdf_to_images.domain.publication.rows import (
+    MIN_DOCUMENTS_FOR_BOILERPLATE,
+    MIN_PAGES_FOR_FURNITURE,
+)
 from finepdf_to_images.domain.publication.schema import (
     DATASET_FIELDS,
     DATASET_FILE,
@@ -127,18 +130,26 @@ things in most documents.
 a miss rather than a negative, and a relevant document that never uses the vocabulary is invisible
 to it.
 
-Everything after selection is mechanical: only relevant documents are fetched, only real PDFs are
-kept, and two kinds of non-picture are dropped. Images under **{MIN_IMAGE_SIDE}px on either side**
-go, because PDFs embed their table rules as images. Images appearing on
-**{MIN_PAGES_FOR_FURNITURE} or more pages** of one document go too: a figure is drawn once, on the
-page that discusses it, while a logo or header mark is drawn on every page. A document left with no
-image publishes no rows.
+**Every row is an image and the caption its author wrote for it.** That is what makes a row a
+training pair rather than a picture with a topic attached, and it is the strongest filter here:
+page scans, publisher badges, halftone fragments and author portraits are all uncaptioned, and all
+of them go.
 
-`caption` is the figure caption written on the image's own page — a line opening `Figure 3.`,
-`Fig. 12`, `Plate 4` and so on. The *n*th image on a page takes the *n*th caption on it: pypdf
-lists a page's images without their placement, so this is order-pairing rather than true
-nearest-caption matching, and it can mispair on a page whose figures are laid out out of order.
-A page naming no figure leaves `caption` empty rather than borrowing prose from nearby.
+`caption` comes from the image's own page — a line opening `Figure 3.`, `Fig. 12`, `Plate 4` and
+so on, continued across the line breaks the layout imposed until the sentence ends. The *n*th image
+on a page takes the *n*th caption on it: pypdf lists a page's images without their placement, so
+this is order-pairing rather than true nearest-caption matching, and it can mispair on a page whose
+figures are laid out out of order.
+
+Four kinds of non-picture are dropped before that:
+
+- images under **{MIN_IMAGE_SIDE}px on either side** — PDFs embed their table rules as images;
+- images on **{MIN_PAGES_FOR_FURNITURE} or more pages** of one document — a figure is drawn once,
+  on the page that discusses it, while a logo is drawn on every page;
+- images appearing in **{MIN_DOCUMENTS_FOR_BOILERPLATE} or more documents** — a publisher's badge
+  rather than anyone's figure;
+- every image from a document that is a **scan of pages** rather than a paper with figures in it:
+  one big image per page, page-shaped and alone on its page.
 
 ## Source
 

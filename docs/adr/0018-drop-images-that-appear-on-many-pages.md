@@ -47,3 +47,23 @@ on both sides, and a cover image repeated on a back page is not worth the false 
 - Like the size floor, it is a content-based exclusion applied at publication rather than at
   extraction: the extraction index keeps every occurrence, so the decision can be revisited
   without re-fetching anything.
+
+
+## Amendment (2026-09-18) — counting across documents too
+
+The rule above counts pages within one document, which cannot see a publisher's badge: within any
+one document a CrossMark button or a society seal appears exactly once, which is what a figure looks
+like.
+
+A digest appearing in **2 or more documents** is now dropped as boilerplate. Two rather than three,
+because unlike the page rule there is no leaflet case to protect: a figure published in two
+documents of a 5,000-row crawl is far more likely to be a shared badge than a coincidence.
+
+Measured honestly: in the run this was written against, **one** digest appeared in more than one
+document. The badges are visibly the same logo to a reader but are re-encoded per publisher, so
+byte identity does not catch them. Catching a logo re-rendered at another resolution needs
+perceptual hashing — a new dependency and a similarity threshold to tune — and is deliberately out
+of scope.
+
+The two counts are reported separately in the manifest, so the effect of each is visible rather
+than merged.
