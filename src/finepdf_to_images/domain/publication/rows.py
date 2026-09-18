@@ -11,7 +11,11 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from finepdf_to_images.domain import policy
-from finepdf_to_images.domain.images import image_path
+from finepdf_to_images.domain.images import (
+    image_path,
+    is_continuous_tone,
+    scanned_document_pages,
+)
 from finepdf_to_images.domain.publication.fields import (
     _flag,
     _index,
@@ -189,18 +193,21 @@ def build_dataset_rows(
     """
     by_row = _images_by_row(images)
     available = dict(image_bytes or {})
+    boilerplate = cross_document_digests(images)
     rows: list[dict[str, Any]] = []
     for document in derive_relevant_rows(documents):
-        embedded = _embedded_images(by_row.get(str(document.get("row_id")), ()), available)
+        owned = by_row.get(str(document.get("row_id")), ())
+        embedded = _embedded_images(owned, available, boilerplate)
         terms = [str(term) for term in document.get("matched_terms") or ()]
         rows.extend(
             {
                 "pdf_url": _text(document, "url"),
-                "image": image,
+                "image": embedded_image["image"],
+                "caption": embedded_image["caption"],
                 "text": _text(document, "text"),
                 "matched_terms": terms,
             }
-            for image in embedded
+            for embedded_image in embedded
         )
     return rows
 
@@ -219,27 +226,149 @@ def _images_by_row(images: Sequence[Mapping[str, Any]]) -> dict[str, list[Mappin
     return grouped
 
 
+#: How many documents an image must appear in before it is a publisher's boilerplate.
+#:
+#: Two, not three. Unlike the page-spread rule there is no leaflet case to protect: a figure
+#: published in two different documents of a 5,000-row crawl is far more likely to be a shared
+#: badge -- CrossMark, "Check for updates", a society seal -- than a coincidence.
+#:
+#: This catches byte-identical copies only. The same logo re-rendered at another resolution has
+#: another digest and passes; catching that needs perceptual hashing, a new dependency and a
+#: similarity threshold to tune, which is a different kind of change from a count.
+MIN_DOCUMENTS_FOR_BOILERPLATE = 2
+
+
+def cross_document_digests(
+    images: Sequence[Mapping[str, Any]], min_documents: int = MIN_DOCUMENTS_FOR_BOILERPLATE
+) -> frozenset[str]:
+    """The digests that appear in several documents, and so belong to none of them.
+
+    The per-document furniture rule cannot see these: within any one document a publisher's
+    badge appears exactly once, which is what a figure looks like.
+    """
+    documents_by_digest: dict[str, set[str]] = {}
+    for image in images:
+        digest = str(image.get("sha256") or "")
+        if digest:
+            documents_by_digest.setdefault(digest, set()).add(str(image.get("document_row_id")))
+    return frozenset(
+        digest
+        for digest, documents in documents_by_digest.items()
+        if len(documents) >= min_documents
+    )
+
+
+#: How many distinct pages an image must appear on before it is page furniture rather than a
+#: figure.
+#:
+#: A figure is drawn once, on the page that discusses it. A logo, header rule, footer mark or
+#: watermark is drawn on every page. There is very little in between, which is what makes the
+#: rule cheap: it does not need a threshold chosen by taste.
+#:
+#: Two is deliberately below the line. A two-page leaflet's single photograph can legitimately
+#: appear on both sides, and a cover image repeated on a back page is not worth the false
+#: positive; three or more is furniture in practice.
+MIN_PAGES_FOR_FURNITURE = 3
+
+
+def page_furniture_digests(
+    images: Sequence[Mapping[str, Any]], min_pages: int = MIN_PAGES_FOR_FURNITURE
+) -> frozenset[str]:
+    """The digests of one document's images that are page furniture, not figures.
+
+    Counted over **distinct pages**, not occurrences: a figure repeated twice on its own page is
+    still one figure, while a mark appearing once per page on five pages is a header.
+
+    Scoped to one document. Two documents that happen to share a stock photograph are not each
+    other's furniture, and the caller passes one document's images.
+
+    Deduplication alone did not solve this. Identical bytes have one digest, so a logo was
+    already carried once per document -- and carrying it once is still carrying it. The corpus
+    is meant to show what agriculture looks like, and an institutional crest published with a
+    document's agricultural terms attached is a confident example of the wrong thing.
+    """
+    pages_by_digest: dict[str, set[int]] = {}
+    for image in images:
+        digest = str(image.get("sha256") or "")
+        if digest:
+            pages_by_digest.setdefault(digest, set()).add(_number(image, "page_index"))
+    return frozenset(digest for digest, pages in pages_by_digest.items() if len(pages) >= min_pages)
+
+
+def _is_publishable(
+    image: Mapping[str, Any],
+    digest: str,
+    *,
+    seen: frozenset[str] | set[str],
+    available: Mapping[str, bytes],
+    furniture: frozenset[str],
+) -> bool:
+    """Whether this occurrence earns a published row.
+
+    Kept together so the loop reads as one decision: no digest at all, a digest already carried,
+    bytes that were never read, an image one of the exclusion rules judged not a figure, or no
+    caption -- and without a caption a row is a picture with a topic attached rather than the pair
+    this dataset is made of (ADR-0019) -- or line art rather than a photograph (ADR-0021).
+    """
+    return _is_carriable(
+        digest, seen=seen, available=available, furniture=furniture
+    ) and _is_wanted(image)
+
+
+def _is_carriable(
+    digest: str,
+    *,
+    seen: frozenset[str] | set[str],
+    available: Mapping[str, bytes],
+    furniture: frozenset[str],
+) -> bool:
+    """Whether this occurrence can be carried: a digest, once, whose bytes we hold and kept."""
+    return bool(digest) and digest not in seen and digest in available and digest not in furniture
+
+
+def _is_wanted(image: Mapping[str, Any]) -> bool:
+    """Whether this is the kind of picture the dataset is made of.
+
+    A caption, because without one a row is a picture with a topic attached rather than a pair
+    (ADR-0019); and continuous tone, because a box plot teaches a model nothing about a plant
+    (ADR-0021).
+    """
+    return bool(str(image.get("caption") or "").strip()) and is_continuous_tone(
+        image.get("distinct_colours")
+    )
+
+
 def _embedded_images(
-    images: Sequence[Mapping[str, Any]], available: Mapping[str, bytes]
+    images: Sequence[Mapping[str, Any]],
+    available: Mapping[str, bytes],
+    boilerplate: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """The embeddable images for one document, each digest once, in first-occurrence order.
 
     The same bytes can appear on several pages, and the old index emitted a row per occurrence
     with ``duplicate_of`` pointing back at the first. Embedding repeats that way would hand a
-    reader the same picture several times, so a digest is carried once.
+    reader the same picture several times, so a digest is carried once -- and an image spread
+    across enough pages is dropped entirely, per :func:`page_furniture_digests`.
 
     ``{"bytes": ..., "path": ...}`` is the shape the Hub's ``Image`` feature decodes; the path is
     a label the viewer shows, not a file that has to exist in the repository.
     """
+    furniture = page_furniture_digests(images) | boilerplate | scanned_document_pages(images)
     embedded: list[dict[str, Any]] = []
     seen: set[str] = set()
     for image in images:
         digest = str(image.get("sha256") or "")
-        if digest in seen or digest not in available:
+        if not _is_publishable(image, digest, seen=seen, available=available, furniture=furniture):
             continue
         seen.add(digest)
         embedded.append(
-            {"bytes": available[digest], "path": image_path(digest, str(image.get("mime") or ""))}
+            {
+                "image": {
+                    "bytes": available[digest],
+                    "path": image_path(digest, str(image.get("mime") or "")),
+                },
+                "caption": str(image.get("caption") or ""),
+            }
         )
     return embedded
 

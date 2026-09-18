@@ -71,6 +71,7 @@ def build_pdf(
     *,
     rotate: int = 0,
     pages: int = 1,
+    lines: list[str] | None = None,
 ) -> bytes:
     """A PDF whose single resource dictionary holds ``images``, optionally on a rotated page.
 
@@ -81,6 +82,11 @@ def build_pdf(
     draw = b" ".join(
         f"q 50 0 0 50 {10 + 60 * i} 10 cm /{name} Do Q".encode() for i, name in enumerate(names)
     )
+    for index, line in enumerate(lines or ()):
+        # Helvetica is one of the 14 standard fonts, so the text needs no embedded font file --
+        # which keeps the fixture readable in a text editor, the whole point of hand-writing them.
+        escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        draw += f" BT /F1 10 Tf 10 {170 - 20 * index} Td ({escaped}) Tj ET".encode()
     content = _stream(f"<< /Length {len(draw)} >>".encode("ascii"), draw)
 
     page_numbers = list(range(3, 3 + pages))
@@ -94,11 +100,15 @@ def build_pdf(
     xobject_first = content_number + 1
     resources = " ".join(f"/{name} {xobject_first + index} 0 R" for index, name in enumerate(names))
     rotation = f" /Rotate {rotate}" if rotate else ""
+    font = (
+        " /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >>" if lines else ""
+    )
     for _ in page_numbers:
         objects.append(
             (
                 f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200]{rotation} "
-                f"/Resources << /XObject << {resources} >> >> /Contents {content_number} 0 R >>"
+                f"/Resources << /XObject << {resources} >>{font} >> "
+                f"/Contents {content_number} 0 R >>"
             ).encode("ascii")
         )
     objects.append(content)
@@ -121,6 +131,16 @@ FIXTURES: dict[str, bytes] = {
     "rotated-page.pdf": build_pdf([(32, 32, (255, 0, 0)), (48, 32, (0, 0, 255))], rotate=90),
     # The same two images on two pages, so page ordering and indices are observable.
     "two-pages.pdf": build_pdf([(32, 32, (255, 0, 0)), (48, 32, (0, 0, 255))], pages=2),
+    # Two images and two figure captions on one page: the caption pairing case (#62).
+    "captioned-figures.pdf": build_pdf(
+        [(32, 32, (255, 0, 0)), (48, 32, (0, 0, 255))],
+        lines=["Figure 1. A wheat canopy at flowering.", "Figure 2. Leaf area index by plot."],
+    ),
+    # Images with page text that names no figure: a caption must not be invented.
+    "uncaptioned-figures.pdf": build_pdf(
+        [(32, 32, (0, 255, 0))],
+        lines=["Annual report of the regional office."],
+    ),
     # Not a PDF at all beyond its header: extraction must fail with a bounded diagnostic.
     "malformed.pdf": b"%PDF-1.7\nthis is not a pdf body at all\n%%EOF\n",
     # A header and nothing else.

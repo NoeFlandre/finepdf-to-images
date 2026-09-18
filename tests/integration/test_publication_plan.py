@@ -172,12 +172,16 @@ def test_publishing_an_empty_run_still_produces_a_coherent_dataset() -> None:
     assert _published_rows(hub) == [], "an empty run publishes a readable, empty table"
 
 
-def test_the_published_table_has_exactly_the_four_reader_facing_columns() -> None:
-    """18 columns of pipeline bookkeeping is what this layout exists to stop publishing."""
+def test_the_published_table_has_exactly_the_reader_facing_columns() -> None:
+    """18 columns of pipeline bookkeeping is what this layout exists to stop publishing.
+
+    `caption` joined them in #62: it is the one line written about *this picture*, which is what
+    an image-text pair needs and what the document-wide `text` column cannot give.
+    """
     hub = FakeHub()
     publish(hub, apply=True)
     rows = _published_rows(hub)
-    assert [list(row) for row in rows] == [["pdf_url", "image", "text", "matched_terms"]]
+    assert [list(row) for row in rows] == [["pdf_url", "image", "caption", "text", "matched_terms"]]
 
 
 def test_only_relevant_documents_are_published() -> None:

@@ -168,6 +168,10 @@ def test_the_image_record_keys_are_exact() -> None:
         "byte_size",
         "path",
         "duplicate_of",
+        "caption",
+        "page_width",
+        "page_height",
+        "distinct_colours",
     }
 
 
@@ -239,14 +243,20 @@ def test_exactly_the_minimum_concept_depth_is_enough() -> None:
 
     The case has to sit *exactly* on the threshold to discriminate: a four-concept document
     satisfies both `>= 3` and `> 3` and proves nothing.
+
+    All three concepts come from the phenotyping group, so this is a single-group document and
+    depth is the only thing that can make it relevant. Mixing in a crops term would satisfy the
+    breadth rule instead and the depth threshold would stop being the thing under test.
     """
-    result = score("Wheat and barley cultivar trials.")
+    result = score("Canopy cover, leaf area index and senescence were scored.")
+    assert result.matched_groups == ("phenotyping",)
     assert result.concept_depth == MIN_CONCEPTS_IN_ONE_GROUP
     assert result.relevant
 
 
 def test_a_document_one_concept_short_of_the_threshold_is_not_relevant() -> None:
-    result = score("Cultivar trials for wheat.")
+    result = score("Canopy cover and leaf area index were scored.")
+    assert result.matched_groups == ("phenotyping",)
     assert result.concept_depth == MIN_CONCEPTS_IN_ONE_GROUP - 1
     assert not result.relevant
 

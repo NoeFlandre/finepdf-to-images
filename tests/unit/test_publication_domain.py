@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import pytest
@@ -88,6 +89,8 @@ def image_row(index: int, page: int = 0, position: int = 0) -> dict[str, Any]:
         "width": 4,
         "height": 4,
         "byte_size": 99,
+        "caption": f"Figure {position + 1}. A canopy.",
+        "distinct_colours": 15_000,
         "duplicate_of": None,
     }
 
@@ -429,10 +432,14 @@ def _one_relevant_document() -> list[dict[str, Any]]:
 
 
 def test_the_same_image_on_several_pages_is_embedded_once() -> None:
-    """The old index emitted a row per occurrence; embedding that way repeats the picture."""
+    """The old index emitted a row per occurrence; embedding that way repeats the picture.
+
+    Two pages, not three: three is where `page_furniture_digests` stops treating a repeat as a
+    figure at all, and this test is about deduplication rather than about that rule.
+    """
     from finepdf_to_images.domain.publication import build_dataset_rows
 
-    repeated = [image_row(0, page=0), image_row(0, page=1), image_row(0, page=2)]
+    repeated = [image_row(0, page=0), image_row(0, page=1)]
     for image in repeated:
         image["sha256"] = sha256_hex(b"same")
     rows = build_dataset_rows(_one_relevant_document(), repeated, {sha256_hex(b"same"): b"same"})
@@ -604,3 +611,247 @@ def test_a_renamed_matched_terms_is_refused_rather_than_published_empty() -> Non
     ]
     with pytest.raises(PublicationError, match="missing 'matched_terms'"):
         build_document_rows(scored=scored, retrieved=[], extracted=[])
+
+
+# ------------------------------------------------------------------- page furniture, not figures
+
+
+def _digest(label: str) -> str:
+    """A real SHA-256, since `image_path` refuses anything else."""
+    return hashlib.sha256(label.encode()).hexdigest()
+
+
+def _image(digest: str, page: int, index: int = 0, row_id: str = "r1") -> dict[str, object]:
+    return {
+        "document_row_id": row_id,
+        "sha256": _digest(digest),
+        "page_index": page,
+        "image_index": index,
+        "mime": "image/png",
+    }
+
+
+def test_an_image_on_many_pages_is_furniture_and_publishes_no_row() -> None:
+    """A logo is drawn in the header of every page: same bytes, one digest, many pages.
+
+    Digest deduplication kept exactly one copy of it, which is still keeping the logo. The corpus
+    is meant to teach what agriculture looks like, and a university crest carrying a document's
+    agricultural terms is a confident example of the wrong thing.
+    """
+    from finepdf_to_images.domain.publication import build_dataset_rows
+
+    documents = [
+        {"row_id": "r1", "relevant": True, "url": "https://example.test/a.pdf", "text": "t"}
+    ]
+    images = [dict(_image("logo", page), caption="Figure 1. A crest.") for page in range(5)]
+    images += [dict(_image("figure", 2, index=1), caption="Figure 2. A canopy.")]
+
+    rows = build_dataset_rows(documents, images, {_digest("logo"): b"L", _digest("figure"): b"F"})
+
+    assert [row["image"]["bytes"] for row in rows] == [b"F"]
+
+
+def test_an_image_on_two_pages_is_kept() -> None:
+    """A leaflet's one photograph can legitimately appear on both of its sides. The rule is for
+    furniture, and furniture is on every page, so the boundary leaves the ambiguous case alone."""
+    from finepdf_to_images.domain.publication import build_dataset_rows
+
+    documents = [
+        {"row_id": "r1", "relevant": True, "url": "https://example.test/a.pdf", "text": "t"}
+    ]
+    images = [
+        dict(_image("photo", page), caption="Figure 1. A leaflet photograph.") for page in (0, 1)
+    ]
+
+    rows = build_dataset_rows(documents, images, {_digest("photo"): b"P"})
+
+    assert [row["image"]["bytes"] for row in rows] == [b"P"]
+
+
+def test_the_same_digest_twice_on_one_page_is_not_furniture() -> None:
+    """Page spread is the signal, not occurrence count: a figure repeated on its own page is
+    still one figure."""
+    from finepdf_to_images.domain.publication import build_dataset_rows
+
+    documents = [
+        {"row_id": "r1", "relevant": True, "url": "https://example.test/a.pdf", "text": "t"}
+    ]
+    images = [
+        dict(_image("figure", 0, index=position), caption="Figure 1. A canopy.")
+        for position in range(4)
+    ]
+
+    rows = build_dataset_rows(documents, images, {_digest("figure"): b"F"})
+
+    assert [row["image"]["bytes"] for row in rows] == [b"F"]
+
+
+def test_page_spread_is_counted_within_a_document() -> None:
+    """Page spread is a per-document count: it asks how a document uses an image.
+
+    Whether an image shared *between* documents should be published is a separate question with
+    a separate answer -- see `cross_document_digests`, which treats it as boilerplate. This test
+    pins the page rule's own scope: three documents, one page each, is not page furniture.
+    """
+    from finepdf_to_images.domain.publication.rows import page_furniture_digests
+
+    images = [_image("stock", 0, row_id=row) for row in ("r1", "r2", "r3")]
+
+    assert page_furniture_digests(images) == frozenset()
+
+
+def test_a_published_row_carries_its_own_caption() -> None:
+    """The pair a foundation model trains on: this picture, and the line written about it.
+
+    `text` is the whole document, repeated once per image; it says what the document is about.
+    The caption says what the *picture* is -- and since #68, a row without one is not published,
+    so the uncaptioned second image contributes nothing.
+    """
+    from finepdf_to_images.domain.publication import build_dataset_rows
+
+    documents = [
+        {"row_id": "r1", "relevant": True, "url": "https://example.test/a.pdf", "text": "t"}
+    ]
+    images = [
+        dict(_image("fig1", 0, index=0), caption="Figure 1. A wheat canopy at flowering."),
+        dict(_image("fig2", 1, index=0), caption=""),
+    ]
+
+    rows = build_dataset_rows(documents, images, {_digest("fig1"): b"A", _digest("fig2"): b"B"})
+
+    assert [row["caption"] for row in rows] == ["Figure 1. A wheat canopy at flowering."]
+
+
+def test_the_dataset_schema_declares_the_caption_column() -> None:
+    from finepdf_to_images.domain.publication import DATASET_FIELDS
+
+    assert "caption" in dict(DATASET_FIELDS)
+
+
+# ------------------------------------------- boilerplate, scans, and rows that are not pairs
+
+
+def test_a_digest_in_several_documents_is_boilerplate() -> None:
+    """A publisher's badge appears once per document, across many: CrossMark, "Check for
+    updates", society seals. The per-document rule cannot see it, because within any one
+    document it appears exactly once.
+    """
+    from finepdf_to_images.domain.publication.rows import cross_document_digests
+
+    images = [_image("badge", 0, row_id=row) for row in ("r1", "r2", "r3")]
+    images += [_image("figure", 0, row_id="r1")]
+
+    assert cross_document_digests(images) == frozenset({_digest("badge")})
+
+
+def test_a_digest_in_one_document_is_not_boilerplate() -> None:
+    from finepdf_to_images.domain.publication.rows import cross_document_digests
+
+    images = [_image("figure", page, row_id="r1") for page in range(3)]
+
+    assert cross_document_digests(images) == frozenset()
+
+
+def test_two_documents_are_enough_to_call_it_boilerplate() -> None:
+    """Unlike the page rule there is no leaflet case to protect: a figure published in two
+    documents of a 5,000-row crawl is far more likely to be a shared badge."""
+    from finepdf_to_images.domain.publication.rows import cross_document_digests
+
+    images = [_image("badge", 0, row_id="r1"), _image("badge", 0, row_id="r2")]
+
+    assert cross_document_digests(images) == frozenset({_digest("badge")})
+
+
+def test_boilerplate_publishes_no_row_in_any_document() -> None:
+    from finepdf_to_images.domain.publication import build_dataset_rows
+
+    documents = [
+        {"row_id": row, "relevant": True, "url": f"https://example.test/{row}.pdf", "text": "t"}
+        for row in ("r1", "r2")
+    ]
+    images = [
+        dict(_image("badge", 0, row_id="r1"), caption="Figure 1. A badge."),
+        dict(_image("badge", 0, row_id="r2"), caption="Figure 1. A badge."),
+        dict(_image("figure", 1, row_id="r1"), caption="Figure 2. A canopy."),
+    ]
+
+    rows = build_dataset_rows(documents, images, {_digest("badge"): b"B", _digest("figure"): b"F"})
+
+    assert [row["caption"] for row in rows] == ["Figure 2. A canopy."]
+
+
+def test_a_row_without_a_caption_is_not_published() -> None:
+    """Every published row is an image-caption pair, by construction.
+
+    A row without a caption carries the document's whole text and nothing about the picture --
+    a topic tag rather than a description. Every junk category found by looking through the
+    published images was uncaptioned: page scans, badges, halftone tiles, author headshots.
+    """
+    from finepdf_to_images.domain.publication import build_dataset_rows
+
+    documents = [
+        {"row_id": "r1", "relevant": True, "url": "https://example.test/a.pdf", "text": "t"}
+    ]
+    images = [
+        dict(_image("fig", 0), caption="Figure 1. A wheat canopy."),
+        dict(_image("plain", 1), caption=""),
+    ]
+
+    rows = build_dataset_rows(documents, images, {_digest("fig"): b"F", _digest("plain"): b"P"})
+
+    assert [row["caption"] for row in rows] == ["Figure 1. A wheat canopy."]
+
+
+def test_a_scanned_document_publishes_no_rows() -> None:
+    from finepdf_to_images.domain.publication import build_dataset_rows
+
+    documents = [
+        {"row_id": "r1", "relevant": True, "url": "https://example.test/a.pdf", "text": "t"}
+    ]
+    images = [
+        dict(
+            _image(f"page{page}", page),
+            caption=f"Figure {page}. Looks captioned.",
+            width=846,
+            height=1153,
+            page_width=612,
+            page_height=792,
+        )
+        for page in range(5)
+    ]
+
+    rows = build_dataset_rows(documents, images, {_digest(f"page{p}"): b"P" for p in range(5)})
+
+    assert rows == []
+
+
+def test_line_art_publishes_no_row() -> None:
+    """A box plot of disease incidence is a figure, and it is not what a model learns a plant
+    from. Measured separation: charts 155-1,344 distinct colours, photographs 11,136-24,995."""
+    from finepdf_to_images.domain.publication import build_dataset_rows
+
+    documents = [
+        {"row_id": "r1", "relevant": True, "url": "https://example.test/a.pdf", "text": "t"}
+    ]
+    images = [
+        dict(_image("chart", 0), caption="Figure 1. Disease incidence.", distinct_colours=216),
+        dict(_image("photo", 1), caption="Figure 2. A wheat canopy.", distinct_colours=15_000),
+    ]
+
+    rows = build_dataset_rows(documents, images, {_digest("chart"): b"C", _digest("photo"): b"P"})
+
+    assert [row["caption"] for row in rows] == ["Figure 2. A wheat canopy."]
+
+
+def test_an_image_with_no_colour_count_is_still_published() -> None:
+    """The count arrived with this rule; an index without it is not judged by it."""
+    from finepdf_to_images.domain.publication import build_dataset_rows
+
+    documents = [
+        {"row_id": "r1", "relevant": True, "url": "https://example.test/a.pdf", "text": "t"}
+    ]
+    images = [dict(_image("older", 0), caption="Figure 1. A canopy.")]
+
+    rows = build_dataset_rows(documents, images, {_digest("older"): b"O"})
+
+    assert len(rows) == 1

@@ -10,6 +10,7 @@ from finepdf_to_images.domain.scoring import (
     EXCLUDED_AMBIGUOUS_TERMS,
     MIN_CONCEPTS_IN_ONE_GROUP,
     MIN_GROUPS,
+    TOPIC_GROUP,
     VOCABULARY,
     VOCABULARY_LANGUAGE,
     normalize,
@@ -199,7 +200,8 @@ def test_a_bare_list_of_commodity_names_does_not_reach_the_depth_threshold(text:
 
 def test_depth_counts_once_a_practice_concept_joins_the_commodity_names() -> None:
     result = score("Wheat, barley and sorghum cultivar trials.")
-    assert result.matched_groups == ("crops",)
+    assert "crops" in result.matched_groups
+    assert result.concept_depth >= MIN_CONCEPTS_IN_ONE_GROUP
     assert result.relevant
 
 
@@ -212,7 +214,6 @@ def test_agrochemical_classes_are_separate_concepts() -> None:
 def test_subsumption_keeps_genuinely_separate_phrases() -> None:
     result = score("Pasture management and drip irrigation on the same holding.")
     assert result.matched_terms == ("drip irrigation", "pasture management")
-    assert result.relevant
 
 
 # --------------------------------------------------------------------------- the thresholds
@@ -224,16 +225,24 @@ def test_a_single_incidental_group_is_not_enough() -> None:
     assert not result.relevant
 
 
-def test_two_groups_are_enough() -> None:
+def test_two_groups_establish_context_but_are_no_longer_enough_on_their_own() -> None:
+    """Breadth says a document is agricultural. It does not say it observes a plant."""
     result = score("The farmer uses drip irrigation.")
     assert len(result.matched_groups) >= MIN_GROUPS
-    assert result.relevant
+    assert not result.relevant
+
+    with_a_trait = score("The farmer uses drip irrigation; canopy cover was measured weekly.")
+    assert with_a_trait.relevant
 
 
-def test_enough_concept_depth_in_one_group_is_enough() -> None:
-    """A narrowly focused document -- a wheat agronomy paper -- that breadth alone would miss."""
+def test_concept_depth_in_one_group_establishes_context_the_same_way() -> None:
+    """A narrowly focused document -- a wheat agronomy paper -- that breadth alone would miss.
+
+    "cultivar trials" is a phenotyping concept as well as a crops one, so this text satisfies
+    both halves of the rule; the depth assertion is what this test is about.
+    """
     result = score("Wheat, barley and sorghum cultivar trials with staggered sowing.")
-    assert result.matched_groups == ("crops",)
+    assert "crops" in result.matched_groups
     assert result.concept_depth >= MIN_CONCEPTS_IN_ONE_GROUP
     assert result.relevant
 
@@ -348,6 +357,7 @@ def test_the_summary_documents_the_vocabulary_and_thresholds() -> None:
     assert summary["thresholds"] == {
         "min_groups": MIN_GROUPS,
         "min_concepts_in_one_group": MIN_CONCEPTS_IN_ONE_GROUP,
+        "requires_phenotyping_concept": True,
     }
     assert set(summary["groups"]) == set(VOCABULARY)
     assert summary["concept_count"] == sum(len(c) for c in VOCABULARY.values())
@@ -410,11 +420,11 @@ def test_no_matched_term_is_subsumed_by_another(text: str) -> None:
 @given(text=st.text(max_size=200))
 def test_relevance_follows_exactly_from_the_documented_thresholds(text: str) -> None:
     result = score(text)
-    expected = (
+    context = (
         len(result.matched_groups) >= MIN_GROUPS
         or result.concept_depth >= MIN_CONCEPTS_IN_ONE_GROUP
     )
-    assert result.relevant is expected
+    assert result.relevant is (context and TOPIC_GROUP in result.matched_groups)
 
 
 @pytest.mark.property
@@ -422,3 +432,58 @@ def test_relevance_follows_exactly_from_the_documented_thresholds(text: str) -> 
 def test_adding_only_punctuation_and_space_cannot_create_relevance(text: str, noise: str) -> None:
     if not score(text).relevant:
         assert not score(f"{text}{noise}").relevant
+
+
+# ------------------------------------------------------- phenotyping is the topic, not agriculture
+
+
+def test_a_phenotyping_study_is_relevant() -> None:
+    """The kind of document the corpus exists for: traits measured across cultivars."""
+    result = score(
+        "Canopy cover and leaf area index were measured weekly across twelve cultivars in a "
+        "replicated field trial. Grain yield and above-ground biomass were recorded at harvest, "
+        "and senescence was scored visually at each growth stage."
+    )
+
+    assert result.relevant
+    assert "phenotyping" in result.matched_groups
+
+
+def test_a_pesticide_product_label_is_not_relevant() -> None:
+    """REGRESSION: this cleared the old rule on `agricultural`, `fungicide`, `grazing`.
+
+    It is genuinely agricultural, which is why thresholds over an agriculture vocabulary cannot
+    exclude it. It measures no trait, so the phenotyping requirement does.
+    """
+    result = score(
+        "A broad-spectrum fungicide for agricultural use. Do not allow livestock to enter "
+        "treated areas for grazing within 14 days of application. Keep out of reach of children."
+    )
+
+    assert not result.relevant
+
+
+def test_an_outdoors_magazine_is_not_relevant() -> None:
+    """REGRESSION: cleared on `goat`, `goats`, `shellfish` -- three livestock and fisheries
+    concepts, one group, threshold met."""
+    result = score(
+        "The hunter tracked wild goats along the ridge before dawn. Local villages still trade "
+        "in shellfish, and a goat is worth more than a week of fishing."
+    )
+
+    assert not result.relevant
+
+
+def test_agriculture_context_is_still_required_alongside_a_trait() -> None:
+    """A phenotyping concept on its own is not enough: `biomass` appears in energy and ecology
+    papers that have nothing to do with crops."""
+    result = score("Microbial biomass in the reactor was measured after each run.")
+
+    assert not result.relevant
+
+
+def test_the_vocabulary_declares_its_phenotyping_group() -> None:
+    summary = vocabulary_summary()
+
+    assert "phenotyping" in summary["groups"]
+    assert summary["thresholds"]["requires_phenotyping_concept"] is True
