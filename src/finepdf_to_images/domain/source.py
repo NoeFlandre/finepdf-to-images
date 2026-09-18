@@ -33,7 +33,16 @@ DEFAULT_LIMIT = 100
 
 #: A hard ceiling, not a default. Without it "bounded" is a promise the code does not keep: a
 #: --limit of 500,000 would walk all 388 row groups and download the whole 4.8 GB shard.
-MAX_LIMIT = 5000
+#:
+#: Raised from 5,000 to 20,000 for #70. At 5,000 the pipeline published 13 rows, and the filters
+#: that produced that number -- the colour-count cut above all -- were tuned on populations of a
+#: few dozen. A threshold measured on 39 images and checked against 13 cannot be told apart from
+#: two unlucky documents. 20,000 rows reads about 20 of the shard's 388 row groups and is expected
+#: to yield 50-60 published rows: enough that a percentage means something, and still far from
+#: "download the shard".
+#:
+#: It stays a reviewed constant rather than becoming a flag, because the ceiling is the promise.
+MAX_LIMIT = 20_000
 DEFAULT_SEED = "finepdf-to-images/v1"
 
 #: Upstream row groups. Used only to reason about how much of the shard a limit forces us to read;
