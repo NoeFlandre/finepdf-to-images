@@ -10,6 +10,7 @@ nav:
   - Relevance scoring: scoring.md
   - Retrieving PDFs: retrieval.md
   - Extracting images: images.md
+  - Target samples: samples.md
   - Publication policy: policy.md
   - Publishing: publishing.md
   - Architecture: architecture.md

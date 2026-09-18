@@ -30,6 +30,13 @@ pages, and each occurrence gets its own record pointing at one shared artifact.
 Dimensions come from the **decoded image**, not from the PDF's `/Width` and `/Height` entries.
 Those are what the document claims; a manifest should record what the artifact actually is.
 
+## What "good output" looks like
+
+Every check here is mechanical: a digest matches, a path is contained, magic bytes agree. None
+of them can tell you the extracted pictures are the *kind* of picture this project is after.
+[`samples_target/`](samples.md) holds nine in-field crop photographs for that judgement — a
+reference to compare a run's `images/` against, by eye.
+
 ## Input safety
 
 The stored path must be **exactly** the content-addressed path the digest implies, and the bytes

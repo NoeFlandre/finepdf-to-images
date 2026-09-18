@@ -49,7 +49,8 @@ violation or an import cycle.
 
 Full docs live in [`docs/`](docs/index.md): [quickstart](docs/quickstart.md),
 [architecture](docs/architecture.md), [quality gates](docs/quality.md),
-[decisions](docs/adr/index.md), and [technical debt](docs/technical-debt.md).
+[decisions](docs/adr/index.md), [target samples](docs/samples.md), and
+[technical debt](docs/technical-debt.md).
 
 ```bash
 uv run --group docs mkdocs serve

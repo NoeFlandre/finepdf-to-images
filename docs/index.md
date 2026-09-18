@@ -25,3 +25,9 @@ the selected source PDFs, extracts their embedded images, and publishes the boun
 | Composition | `finepdf_to_images.cli`, `finepdf_to_images.pipeline` | Wires adapters into the domain. |
 
 These rules are executable: see `tests/architecture/`.
+
+## Target samples
+
+[`samples_target/`](samples.md) holds in-field crop photographs kept as a reference for the kind
+of image this pipeline is meant to surface. They are not fixtures, not a benchmark, and not part
+of the published dataset.
