@@ -53,10 +53,10 @@ and image binaries, the extracted text is part of FinePDFs itself (licensed ODC-
 makes the relevance score and `matched_terms` auditable without re-downloading the source shard.
 The published `text_sha256` is verified against the UTF-8 text digest at publication time so that
 the published text cannot drift from what was scored. Total published text bytes are strictly bounded
-in the domain by `MAX_DOCUMENT_TEXT_BYTES` (50 MB cap), counted across **every file the plan
-publishes**. The derived splits republish the same rows, so a document that is relevant and
-retrieved carries its text three times; measuring only the `all` set would under-count the
-publication by that factor — the pilot uploads 30.1 MB of text where such a count reports 24.7 MB.
+in the domain by `MAX_DOCUMENT_TEXT_BYTES` (50 MB cap), counted across **the rows the run actually
+publishes**. It used to sum every scored row, which refused a 5000-row sample over 75 MB of text
+that belonged almost entirely to documents the run never published. One row per image means a
+document's text repeats across its images, and the cap counts every copy.
 
 **Source bytes are uploaded only for allow-listed sources.** The default is still
 `metadata-only` — hashes and provenance, not the document — and it applies to the overwhelming
@@ -72,14 +72,16 @@ Three checks stand between a cleared row and an upload, and they are deliberatel
 - its digest must belong to a row the policy cleared — swapping the bytes under a cleared path
   does not inherit that path's clearance;
 - the total is capped by `MAX_ARTIFACT_BYTES` (64 MB), so a mistake in the allow list cannot become
-  an unbounded redistribution.
+  an unbounded redistribution. Like the text cap, it is measured over the rows being published, and
+  it is enforced in the publish stage beside it.
 
 A fourth check runs in both directions: a manifest claiming `publishes_source_bytes` with no
 artifact in the plan is refused, and so is a plan carrying artifacts under a manifest that claims
 none. The card's claim and the payload cannot disagree.
 
-Rows that were not cleared keep `image: null` and `pdf: null` rather than disappearing — the
-dataset should say what it declined to publish.
+A document whose images the policy did not clear publishes no rows at all. This is
+`finepdf-to-images`: every published row carries a picture, by construction. What the run declined
+is a fact about the run, and the manifest is where it is recorded.
 
 ## The card is generated
 
@@ -87,15 +89,15 @@ Its policy and vocabulary sections come from `policy_summary()` and `vocabulary_
 same functions that enforce the rules. A card that disagrees with the code is worse than no card,
 so it is not written by hand and cannot drift.
 
-The schema tables are generated from `DOCUMENT_FIELDS` and `IMAGE_FIELDS`, and a test asserts every
-documented field is actually emitted.
+The schema table is generated from `DATASET_FIELDS`, the same tuple the published rows are built
+from, so a column cannot be added to the data and forgotten in the card.
 
-The card's YAML front matter is a **machine-read contract**, not prose. Without explicit `configs:`
-declaring `documents` (with its `all`, `relevant`, and `retrieved` splits) and `images`
-(`train` split) as separate configurations, the Hub auto-detects `data/*` as a single split,
-attempts to concatenate files with incompatible schemas, and fails with `CastError` (disabling
-parquet conversion and the Dataset Viewer). A domain test asserts that the front matter parses
-as valid YAML and explicitly declares both configs with their respective splits and data files.
+The card's YAML front matter is a **machine-read contract**, not prose. It declares one `default`
+config with a `train` split over the single parquet, and it declares each column's dtype — `image`
+above all. Without an explicit `image` dtype the column is inferred as a string and the viewer
+shows a struct instead of a picture, which is the whole point of the dataset. A domain test asserts
+that the front matter parses as valid YAML and declares the config, the split and the features it
+claims.
 
 ## The published tree can shrink
 

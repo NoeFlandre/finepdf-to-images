@@ -306,6 +306,47 @@ def test_the_cap_counts_text_repeated_across_a_documents_images() -> None:
         check_text_byte_cap(rows, max_text_bytes=25)
 
 
+def test_total_artifact_byte_cap_is_enforced_on_the_published_rows() -> None:
+    """REGRESSION: documented in ADR-0013 and docs/publishing.md, enforced nowhere.
+
+    The check lived in ``_check_artifacts``, reachable only from ``build_plan``, which had no
+    callers once the minimal parquet replaced the six-file layout. #47 removed the unreachable
+    code and the cap went with it, while both documents kept promising it. This is the cap on
+    *other people's* bytes, so an allow-list mistake is exactly what it exists to stop.
+    """
+    from finepdf_to_images.domain.publication import check_artifact_byte_cap
+
+    rows = [{"image": {"bytes": b"0123456789", "path": "images/a.png"}}]
+    check_artifact_byte_cap(rows, max_artifact_bytes=10)  # exactly at the boundary: passes
+
+    with pytest.raises(PublicationError, match="over the cap"):
+        check_artifact_byte_cap(rows, max_artifact_bytes=9)
+
+
+def test_the_artifact_cap_counts_every_published_row() -> None:
+    """One row per image (ADR-0016), so the total is over rows, not over distinct documents."""
+    from finepdf_to_images.domain.publication import check_artifact_byte_cap
+
+    rows = [{"image": {"bytes": b"x" * 10, "path": f"images/{index}.png"}} for index in range(3)]
+    with pytest.raises(PublicationError, match="3 published row"):
+        check_artifact_byte_cap(rows, max_artifact_bytes=25)
+
+
+def test_the_artifact_cap_ignores_bytes_the_run_never_publishes() -> None:
+    """The text cap had to learn this: measure what reaches the Hub, not what was extracted."""
+    from finepdf_to_images.domain.publication import check_artifact_byte_cap
+
+    check_artifact_byte_cap([], max_artifact_bytes=0)
+
+
+def test_the_artifact_cap_tolerates_a_row_without_embedded_bytes() -> None:
+    """A row is only built around an embeddable image, but the check must not be the thing that
+    crashes if that ever stops being true."""
+    from finepdf_to_images.domain.publication import check_artifact_byte_cap
+
+    check_artifact_byte_cap([{"image": None}, {}], max_artifact_bytes=1)
+
+
 # --------------------------------------------------------------- publishing artifact bytes
 #
 # This is the only path in the project that can put a third party's work on the internet. The

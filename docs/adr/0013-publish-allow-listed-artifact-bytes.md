@@ -68,3 +68,20 @@ the documents that *are* free to republish are free by **statute**, and no scann
 - Adding a source is a deliberate edit to a reviewed file, not a configuration change, and it
   requires re-running `retrieve`: the disposition is decided when the bytes are fetched and stored
   in the record, so the allow list is not retroactive over an existing run.
+
+## Amendment (2026-09-18)
+
+The decision stands; one of its checks stopped running and has been restored.
+
+The 64 MB cap was enforced in `_check_artifacts`, which was reachable only from `build_plan`. Once
+the minimal parquet (ADR-0015, ADR-0016) replaced the six-file layout, `build_plan` had no callers,
+and the dead-code removal that followed took the cap check with it. This document and
+`docs/publishing.md` went on describing a ceiling that nothing measured.
+
+`check_artifact_byte_cap` restores it, and the publish stage calls it beside `check_text_byte_cap`
+so both caps are enforced at one point. It measures the image bytes embedded in the rows being
+published rather than everything the run extracted — the same correction the text cap needed after
+it refused a valid run over text that was never published.
+
+The other checks in point 5 are unaffected: content-addressed paths and clearance by row id both
+sit on the path that is still in use.
