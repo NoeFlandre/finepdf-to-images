@@ -6,6 +6,7 @@ theme:
 nav:
   - Home: index.md
   - Quickstart: quickstart.md
+  - Glossary: glossary.md
   - Pinned input: source.md
   - Relevance scoring: scoring.md
   - Retrieving PDFs: retrieval.md

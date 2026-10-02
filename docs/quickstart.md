@@ -17,25 +17,25 @@ uv run finepdf-to-images --help
 uv run finepdf-to-images version
 ```
 
-Select a bounded sample from the pinned shard (see [Pinned input](source.md)):
+Select a bounded sample from the pinned shard. See [Pinned input](source.md).
 
 ```bash
 uv run finepdf-to-images select --limit 100 --out out/select
 ```
 
-Or entirely offline, against the committed fixture shard:
+To work offline, use the committed fixture shard:
 
 ```bash
 uv run finepdf-to-images select --source-dir tests/fixtures/shards --limit 5 --out out/select
 ```
 
-Score the selected rows for agriculture relevance (see [Relevance scoring](scoring.md)):
+Score the selected rows for agriculture relevance. See [Relevance scoring](scoring.md).
 
 ```bash
 uv run finepdf-to-images score --records out/select/records.jsonl --out out/score
 ```
 
-Retrieve the source PDFs for the relevant rows (see [Retrieving PDFs](retrieval.md)):
+Retrieve the source PDFs of the relevant rows. See [Retrieving PDFs](retrieval.md).
 
 ```bash
 uv run finepdf-to-images retrieve \
@@ -44,7 +44,7 @@ uv run finepdf-to-images retrieve \
   --relevant-only --out out/retrieve
 ```
 
-Extract the images embedded in those PDFs (see [Extracting images](images.md)):
+Extract the images that are embedded in these PDFs. See [Extracting images](images.md).
 
 ```bash
 uv run finepdf-to-images extract \
@@ -52,8 +52,7 @@ uv run finepdf-to-images extract \
   --pdf-root out/retrieve --out out/extract
 ```
 
-Publish the result (see [Publishing](publishing.md)). This is a **dry run**; add `--apply` to
-upload:
+Publish the result. See [Publishing](publishing.md). The command below is a **dry run**. To upload, add `--apply`.
 
 ```bash
 uv run finepdf-to-images publish \
@@ -63,13 +62,13 @@ uv run finepdf-to-images publish \
   --out out/publish
 ```
 
-Exit codes are a stable contract:
+The exit codes are a stable contract:
 
 | Code | Meaning |
 | --- | --- |
-| `0` | the requested command completed |
-| `1` | the command ran but the requested work failed |
-| `2` | usage error (unknown command, bad or missing arguments) |
+| `0` | The command completed. |
+| `1` | The command ran, but the requested work failed. |
+| `2` | Usage error (unknown command, or wrong or missing arguments). |
 
 ## Docker
 
@@ -78,14 +77,15 @@ docker build -t finepdf-to-images .
 docker run --rm finepdf-to-images --help
 ```
 
-The image contains no credentials. Pass a Hugging Face token at run time only when a command needs
-one:
+The image contains no credentials. Give a Hugging Face token at run time only when a command needs it:
 
 ```bash
 docker run --rm -e HF_TOKEN finepdf-to-images version
 ```
 
 ## Documentation
+
+To read the documentation in a browser, do this:
 
 ```bash
 uv run --group docs mkdocs serve
