@@ -1,35 +1,27 @@
-# ADR-0007 — Extract embedded images, and nothing else
+# ADR-0007: Extract embedded images, and nothing else
 
 Status: accepted (2026-09-16)
 
 ## Context
 
-"Publish the images in agriculture-relevant PDFs" has at least three readings: the pictures
-embedded in the file, the pages rendered as images, or the figures identified by layout analysis.
-They need very different machinery — the first is a parse, the second a renderer, the third a
-model.
+"Publish the images in agriculture-relevant PDFs" has at least three meanings:
+
+- the pictures that are embedded in the file
+- the pages that a renderer renders as images
+- the figures that a layout analysis identifies
+
+They need very different machinery. The first is a parse. The second is a renderer. The third is a model.
 
 ## Decision
 
-Extract **embedded** image XObjects with one pinned library (`pypdf`), and stop there. No page
-rendering, no OCR, no layout inference, no image classification.
+Extract the **embedded** image XObjects with one pinned library (`pypdf`). Do nothing else. Do not render pages. Do not run OCR. Do not infer layout. Do not classify images.
 
-Dimensions come from the decoded image rather than the PDF's declared `/Width` and `/Height`.
-Bytes are checked against the magic bytes for their claimed media type. Images are content-
-addressed and deduplicated across the run.
+The dimensions come from the decoded image. They do not come from the `/Width` and `/Height` that the PDF declares. Check the bytes against the magic bytes of the media type that the extractor claimed. Content-address the images and deduplicate them across the run.
 
 ## Consequences
 
-- A scanned document produces one image per page, which is the literal truth about its contents
-  and not what a reader looking for "figures" wants. Documented rather than papered over.
-- A document whose figures are vector drawings produces nothing, and is a legitimate zero-image
-  result.
-- `pypdf` and `Pillow` become runtime dependencies. Pillow is what gives real dimensions and format
-  rather than the document's claims; both are on the domain's forbidden-import list, so they stay
-  in the adapter.
-- Extraction output depends on those two libraries' decoding, so both are pinned to **exact**
-  versions rather than floors, and the expected image hashes are written down in the tests. The
-  hand-written PDF fixtures alone were not enough: they store raw samples that Pillow re-encodes,
-  so without pinned hashes a Pillow bump would have changed every published artifact silently.
-- Adding rendering or OCR later is a new adapter behind the same `ImageExtractor` protocol, not a
-  rewrite.
+- A scanned document gives one image for each page. This is the literal truth about its contents. A reader who looks for "figures" does not want it. The documentation states it. It does not hide it.
+- A document with vector drawings as figures gives nothing. This is a legitimate result with zero images.
+- `pypdf` and `Pillow` become runtime dependencies. Pillow gives the real dimensions and format. It does not use the claims of the document. Both libraries are on the list of imports that the domain must not use. Thus they stay in the adapter.
+- The extraction output depends on the decoding of these two libraries. Thus the project pins both to **exact** versions and not to minimum versions. The tests contain the expected image hashes. The hand-written PDF fixtures alone were not enough. They store raw samples that Pillow re-encodes. Without pinned hashes, a Pillow upgrade silently changes each published artifact.
+- To add rendering or OCR later is a new adapter behind the same `ImageExtractor` protocol. It is not a rewrite.
