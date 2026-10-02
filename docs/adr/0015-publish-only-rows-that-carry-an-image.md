@@ -1,48 +1,30 @@
-# ADR-0015 — Publish only rows that carry an image, and stop filtering images by licence
+# ADR-0015: Publish only rows that carry an image, and stop filtering images by license
 
 Status: accepted (2026-09-17)
 
 ## Context
 
-After ADR-0014 and the minimal parquet layout, the published dataset held 52 rows of which
-**one** carried a visible image. Ten documents had images extracted; nine of them showed an empty
-`images` column because their source was not on the redistribution allow list.
+ADR-0014 and the minimal Parquet layout were done. Then the published dataset had 52 rows. Only **one** row carried a visible image. The pipeline extracted images from ten documents. Nine of them showed an empty `images` column, because their source was not on the redistribution allow-list.
 
-So a reader opening a dataset called `finepdf-to-images` met 51 rows with no picture, and no way
-to tell "this PDF had no images" from "this PDF had images you may not see".
+Thus a reader who opened a dataset with the name `finepdf-to-images` saw 51 rows with no picture. The reader could not know the reason: "this PDF had no images" or "this PDF had images that you cannot see".
 
 ## Decision
 
-1. **A document with no embeddable image is not published.** The filter is applied to what
-   actually embeds, so every published row is one a reader can see something in. There is no
-   empty `images` column in the published table.
-2. **Images are no longer filtered by licence.** Every extracted image is published.
+1. **Do not publish a document that has no embeddable image.** Apply the filter to what actually embeds. Thus each published row is a row in which a reader can see something. The published table has no empty `images` column.
+2. **Do not filter images by license.** Publish each extracted image.
 
-Decision 2 is the dataset owner's, taken explicitly with the consequences stated. It is recorded
-here rather than left implicit in a diff, because it reverses the posture of ADR-0013 for images.
+The dataset owner took decision 2. The owner took it explicitly and knew the consequences. This ADR records it. The decision is not implicit in a diff, because it reverses the posture of ADR-0013 for images.
 
 ## Consequences
 
-- The pilot publishes 10 rows instead of 52, and 250 images instead of 190 — from 10 sources
-  instead of 1. (250, not 259: the run extracted 269 image references, which deduplicate to 250
-  distinct images, since the same picture can appear on several pages.)
-- **Nine of those ten sources declared no licence.** They include commercial publishers, an
-  academic journal and a university extension service. Their copyright remains with them; this
-  dataset reproduces their images without permission, as a research proof of concept.
-- The obligation that replaces the filter is disclosure and responsiveness: the card states
-  plainly that most images carry no declared licence, and carries a takedown route. Every row
-  publishes its `pdf_url`, so any image can be traced to its source and removed on request.
-- ADR-0013 still governs **PDF** bytes. This changes the treatment of images only, and the
-  minimal layout no longer republishes PDFs at all.
-- Anyone reusing this dataset inherits that exposure. The card says so; it is not a licence.
+- The pilot publishes 10 rows and not 52. It publishes 250 images and not 190. They come from 10 sources and not 1. The number is 250 and not 259. The run extracted 269 image references. These deduplicate to 250 distinct images, because the same picture can appear on several pages.
+- **Nine of these ten sources declared no license.** They include commercial publishers, an academic journal, and a university extension service. The copyright stays with them. This dataset reproduces their images without permission, as a research proof of concept.
+- Disclosure and responsiveness replace the filter as the obligation. The card states plainly that most images carry no declared license. The card has a takedown route. Each row publishes its `pdf_url`. Thus anyone can trace an image to its source and remove it on request.
+- ADR-0013 still governs the **PDF** bytes. This ADR changes the treatment of images only. The minimal layout no longer republishes PDFs.
+- Anyone who reuses this dataset inherits that exposure. The card says so. It is not a license.
 
-## Alternatives rejected
+## Alternatives that the team rejected
 
-- **Keep the licence filter and filter rows on extracted images.** Ten rows, nine still showing
-  nothing — the original confusion, merely smaller.
-- **Keep the licence filter and filter rows on published images.** One row. A dataset that is
-  really a function of the allow list rather than of the pipeline.
-- **Grow the allow list first.** The principled fix, and still open: clearing more sources would
-  let the filter be strict without the dataset collapsing. It requires a per-source licensing
-  judgement that had not been made, and was not a reason to keep shipping rows a reader cannot
-  use.
+- **Keep the license filter and filter the rows on extracted images.** The result is ten rows, and nine still show nothing. This is the original confusion, but smaller.
+- **Keep the license filter and filter the rows on published images.** The result is one row. This dataset is really a function of the allow-list. It is not a function of the pipeline.
+- **Grow the allow-list first.** This is the principled fix. It is still open. If more sources are cleared, the filter can be strict and the dataset does not collapse. It needs a judgement about the license of each source. Nobody has made it. It was not a reason to continue to ship rows that a reader cannot use.

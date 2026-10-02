@@ -1,6 +1,6 @@
 # Quality gates
 
-The deterministic gauntlet, in order:
+The deterministic gauntlet has these gates, in this order:
 
 ```
 baseline -> Ruff -> ty -> tests -> property tests -> acceptance tests
@@ -17,62 +17,56 @@ baseline -> Ruff -> ty -> tests -> property tests -> acceptance tests
 | 6 | Acceptance scenarios | `uv run pytest -m acceptance` | yes |
 | 7 | Architecture checks | `uv run pytest -m architecture` | yes |
 | 8 | CRAP | `uv run python scripts/crap.py` | yes |
-| 9 | Mutation tests | `uv run mutmut run` | **no — advisory** |
+| 9 | Mutation tests | `uv run mutmut run` | **no (advisory)** |
 | 10 | Smoke (CLI + Docker) | `bash scripts/smoke.sh` | yes |
-| 11 | Diff review | a human, and an independent agent | by convention |
+| 11 | Diff review | a person and an independent agent | by convention |
 
-`main` is protected: the gate jobs are required status checks, branches must be up to date, history
-stays linear, and force pushes and deletion are refused.
+`main` is protected. The gate jobs are required status checks. A branch must be up to date. The history stays linear. The repository refuses force pushes and deletion.
 
-The ordering is **enforced, not merely described**: gates 1–8 run in one job, and the smoke and
-mutation jobs declare `needs: quality`, so they cannot start until the earlier gates pass. Without
-that the jobs run concurrently and the "gauntlet" is a list rather than a sequence.
+The CI **enforces the order**. It does not only describe it. Gates 1 to 8 run in one job. The smoke job and the mutation job declare `needs: quality`. Thus they cannot start until the earlier gates pass. Without this, the jobs run at the same time, and the "gauntlet" is a list and not a sequence.
 
-## What each gate is for
+## Purpose of each gate
 
 ### Property tests
 
-Hypothesis, over the invariants that are easier to state than to enumerate: canonical
-serialization round-trips and is idempotent, selection is bounded and ordered and a subset, no
-input turns an unknown licence into an allowed one, evidence is always a real vocabulary term, no
-matched term is subsumed by another, arbitrary Unicode never raises.
+Hypothesis tests the invariants that are easier to state than to list. These are the invariants:
+
+- Canonical serialization round-trips and is idempotent.
+- The selection is bounded, ordered, and a subset.
+- No input changes an unknown license to an allowed license.
+- The evidence is always a real vocabulary term.
+- No other matched term subsumes a matched term.
+- Arbitrary Unicode never raises an error.
 
 ### Acceptance scenarios
 
-`tests/acceptance/features/pipeline.feature` in Gherkin, driven by `pytest-bdd`. The steps call the
-**real** stage functions; only the shard reader and the HTTP transport are substituted, so the
-scenarios are deterministic and reach no third-party site.
+The file `tests/acceptance/features/pipeline.feature` contains the scenarios in Gherkin. `pytest-bdd` runs them. The steps call the **real** stage functions. The tests replace only the shard reader and the HTTP transport. Thus the scenarios are deterministic and reach no third-party site.
 
-The headline scenario is the whole flow: FinePDF row → relevance decision → PDF retrieval → image
-extraction → manifest. The rest are failures: an unsafe URL, HTML served as a PDF, a malformed PDF,
-a PDF with no images, blank text, and publication refused without a licence.
+The main scenario is the whole flow: FinePDF row, relevance decision, PDF retrieval, image extraction, manifest. The other scenarios are failures:
+
+- an unsafe URL
+- HTML served as a PDF
+- a malformed PDF
+- a PDF with no images
+- blank text
+- a publication that is refused without a license
 
 ### Architecture checks
 
-An AST walk over `src/`. The domain must not import a network, filesystem, PDF or Hub library, must
-not import an adapter or the CLI, and the package must stay acyclic. The analyser carries its own
-regression tests, because an earlier version of it silently matched nothing.
+The check is an AST walk over `src/`. The domain must not import a network, filesystem, PDF, or Hub library. The domain must not import an adapter or the CLI. The package must stay acyclic. The analyser has its own regression tests, because an earlier version silently matched nothing.
 
 ### Complexity: one limit, two gates
 
-**Maximum cyclomatic complexity is 6**, and both gates enforce it:
+The **maximum cyclomatic complexity is 6**. Both gates enforce it:
 
-- **Ruff** (`mccabe.max-complexity = 6`) caps raw complexity. It is fast and runs in the editor,
-  so it is where a too-branchy function should be caught.
-- **CRAP** caps complexity *weighted by how well it is tested*. At full coverage CRAP equals the
-  raw complexity, so the same 6 applies; below full coverage the ceiling drops sharply.
+- **Ruff** (`mccabe.max-complexity = 6`) caps the raw complexity. It is fast and it runs in the editor. Thus it must catch a function with too many branches.
+- **CRAP** caps the complexity *weighted by the quality of the tests*. At full coverage, CRAP is equal to the raw complexity. Thus the same limit of 6 applies. Below full coverage, the ceiling drops sharply.
 
-The two used to disagree — ruff allowed 8 while CRAP rejected 7 at full coverage — which made
-ruff's limit unreachable and meant the slower gate always fired first, in CI rather than locally.
+In the past, the two limits disagreed. Ruff allowed 8 and CRAP rejected 7 at full coverage. Thus the limit of Ruff was unreachable. The slower gate always fired first, in CI and not locally.
 
-6 was kept rather than raised. All 203 functions in `src/` already meet it, so raising the limit
-would have relaxed a standard that is being met, to avoid the occasional forced split. Functions
-whose branching *is* their specification — `policy.decide`, `retrieval.evaluate` — sit at exactly
-6 and are not exempt: when one of them next needs a seventh branch, that is a prompt to look at
-whether the rule itself has grown, not to raise the number.
+The project kept the limit of 6. It did not increase it. All 203 functions in `src/` already meet it. An increase would relax a standard that the code already meets. It would only avoid the occasional forced split. Some functions are the specification of their own branching, for example `policy.decide` and `retrieval.evaluate`. They have exactly 6 and they are not exempt. When one of them needs a seventh branch, ask if the rule itself has grown. Do not increase the number.
 
-`scripts/crap.py` reports which functions are within one branch of the line, so a cluster coming
-to rest on the threshold is visible before it blocks an unrelated change.
+`scripts/crap.py` reports the functions that are one branch from the limit. Thus you can see a cluster at the threshold before it blocks an unrelated change.
 
 ### CRAP
 
@@ -80,31 +74,19 @@ to rest on the threshold is visible before it blocks an unrelated change.
 CRAP(f) = complexity(f)² × (1 − coverage(f))³ + complexity(f)
 ```
 
-A function with **no** recorded statements is treated as *unmeasured* rather than fully covered,
-and an unmeasured function **with real branching** (complexity > 1) fails the gate. That
-distinction is the whole difference between a gate and a formality: an empty coverage report, or
-one generated before a file grew, otherwise scores every function at 100% and passes having
-measured nothing.
+CRAP shows how dangerous a function is to change. It is high when the function is complicated and has poor coverage. It approaches the raw complexity when the coverage approaches 100%. **The threshold is 6.** At full coverage, a function can have a complexity of 6. At 80% coverage, the ceiling is about 3.
 
-The `complexity > 1` qualifier is deliberate and worth knowing: a straight-line function with no
-coverage data still passes quietly. Every realistic stale or empty report also strips branching
-functions, so the gate fires — but it is a filter, not a total check.
+The gate treats a function with **no** recorded statements as *unmeasured*. It does not treat it as fully covered. An unmeasured function **with real branching** (complexity above 1) fails the gate. This difference separates a gate from a formality. An empty coverage report, or a report that was made before a file grew, gives each function 100%. Then the gate passes and measures nothing.
 
-How dangerous a function is to change. High when it is both complicated and poorly covered;
-collapses toward raw complexity as coverage approaches 100%. **Threshold 6** — at full coverage a
-function may be as complex as 6; at 80% coverage the ceiling is about 3.
+Note the qualifier `complexity > 1`. It is deliberate. A function with straight-line code and no coverage data still passes quietly. Each realistic stale or empty report also removes the functions with branching, so the gate fires. But the gate is a filter and not a total check.
 
-This one does real work. Bringing the project under it forced the HTTP transport to become
-testable (its client is now injectable, and `httpx.MockTransport` exercises the genuine streaming
-and redirect code offline), and split a dozen functions that had quietly grown a branch at a time.
+This gate does real work. To bring the project under the limit, the team made the HTTP transport testable. Its client is now injectable. `httpx.MockTransport` tests the real streaming and redirect code offline. The team also split a dozen functions that had grown one branch at a time.
 
-It is a design constraint, **not a target**: raising coverage on a monster to get under the line is
-exactly the move the number exists to discourage. Read the complexity column too.
+CRAP is a design constraint. It is **not a target**. To raise the coverage of a very complex function and get under the line is the exact action that the number is meant to discourage. Read the complexity column too.
 
-### Mutation tests — advisory, and why
+### Mutation tests (advisory)
 
-`mutmut` over the pure domain — where the decisions live, and where a surviving mutant says
-something real. Current result:
+`mutmut` tests the pure domain. The decisions are in the domain. A surviving mutant there says something real. This is the current result:
 
 | | |
 | --- | --- |
@@ -114,67 +96,39 @@ something real. Current result:
 | skipped | 11 |
 | kill rate | **88%** |
 
-It is **not** a merge gate. A kill rate is a conversation, not a pass/fail line: the honest
-response to a surviving mutant is sometimes a new test and sometimes "that mutant is equivalent",
-and blocking on a percentage rewards writing assertions that mirror the source rather than the
-behaviour.
+This gate is **not** a merge gate. A kill rate starts a discussion. It is not a pass/fail line. A surviving mutant sometimes needs a new test. Sometimes the mutant is equivalent. A block on a percentage rewards assertions that copy the source and not the behavior.
 
-Being advisory has a cost worth stating: `continue-on-error` makes the job **neutral** in the
-checks UI, so a crashed `mutmut` does not stand out from a clean advisory run. The `|| true` that
-used to hide it as well is gone, and the surviving-mutant list is uploaded as an artifact, so the
-evidence is there for anyone who looks — but nobody is forced to.
+The advisory status has a cost. `continue-on-error` makes the job **neutral** in the checks UI. Thus a crashed `mutmut` does not look different from a clean advisory run. The `|| true` that also hid the crash is removed. The job uploads the list of surviving mutants as an artifact. The evidence is available for anyone who looks. Nobody has to look.
 
-The survivors were classified rather than ignored. Three classes mattered and were killed:
+The team classified the survivors and did not ignore them. Three classes were important. The team killed them:
 
-- **Schema key names.** A mutant renaming `"dataset"` to `"DATASET"` in a manifest survived,
-  because nothing asserted the exact keys — and those keys are the published contract.
-- **Boundaries.** `< 1` → `<= 1`, `>= MIN` → `> MIN`. Only the far side of each boundary was
-  tested, so a limit that *rejects a legitimate value* was invisible. One of these would have
-  rejected every connect timeout of a second or less.
+- **Schema key names.** A mutant renamed `"dataset"` to `"DATASET"` in a manifest and survived. No test asserted the exact keys. These keys are the published contract.
+- **Boundaries.** The mutants were `< 1` to `<= 1` and `>= MIN` to `> MIN`. The tests checked only the far side of each boundary. Thus a limit that *rejects a legitimate value* was invisible. One of these mutants rejects each connect timeout of one second or less.
+- **Published values.** Mutants replaced a lookup key with `None`. For example, `image.get("sha256")` became `image.get(None)`. They survived in *both* published-row builders, for almost every column. The rows still carried every documented key, so the schema tests passed. But the columns were empty. No test asserted that a published row carries the values that the earlier stages produced. This is the only claim that the dataset exists to make. A related survivor inverted the document sort key. No test found it, because no test mixed present and absent `row_index`.
 
-- **Published values.** Mutants replacing a lookup key with `None` — `image.get("sha256")`
-  becoming `image.get(None)` — survived across *both* published-row builders, for nearly every
-  column. The rows still carried every documented key, so the schema tests passed; the columns were
-  simply empty. Nothing asserted that a published row carries the values the earlier stages
-  produced, which is the single claim the dataset exists to make. A related survivor inverted the
-  document sort key, which no test caught because none mixed present and absent `row_index`.
+`tests/unit/test_mutation_survivors.py` covers all three classes. It names the mutant that each test kills. The team checked each test. It put its mutant back by hand and saw the test fail. This raised the kill rate from 72% to 88%.
 
-All three are covered in `tests/unit/test_mutation_survivors.py`, which names the mutant each test
-kills, and each test was checked by reintroducing its mutant by hand and watching it fail. That
-took the kill rate from 72% to 88%.
-
-The remaining 181 are overwhelmingly **diagnostic-string mutations** — upper-casing a message,
-replacing it with `None`. Chasing those would turn the tests into a transcription of the source.
-Message *content* is asserted where it matters: a reason a caller matches on, a field name a user
-needs to act.
+Most of the remaining 181 survivors are **mutations of diagnostic strings**. Examples are an upper-cased message and a message replaced with `None`. If the team chases them, the tests become a transcription of the source. The tests assert the *content* of a message where it matters. Examples are a reason that a caller matches on and a field name that a user needs to act on.
 
 ### Smoke
 
-`scripts/smoke.sh` runs the real CLI end to end over the committed fixtures, offline, plus the
-Docker image in CI. Every stage is asserted on its **counts**, not on "a manifest exists":
+`scripts/smoke.sh` runs the real CLI from end to end over the committed fixtures, offline. In CI it also runs the Docker image. The script asserts each stage on its **counts**. It does not assert only that "a manifest exists":
 
-- `score` must find relevant rows, or the later stages would be vacuous.
-- `retrieve`, offline, must fail every attempt **with a recorded reason** — the reason histogram
-  is checked to sum to the attempt count.
-- `extract` runs over the committed fixture PDFs and must decode **2 images from 3 documents**,
-  with one zero-image success and one recorded failure, and must write the artifacts.
-- `select`, `score` and `extract` outputs are compared byte-for-byte across two runs.
+- `score` must find relevant rows. If it does not, the later stages are vacuous.
+- `retrieve`, offline, must fail each attempt **with a recorded reason**. The script checks that the reason histogram sums to the attempt count.
+- `extract` runs over the committed fixture PDFs. It must decode **2 images from 3 documents**. It must give one success with zero images and one recorded failure. It must write the artifacts.
+- The script compares the outputs of `select`, `score`, and `extract` byte for byte across two runs.
 
-An earlier version ran `extract` over an empty retrieval, so the stage never opened a PDF. It
-could not have caught the pypdf `DependencyError` this gate is credited with catching — a gate that
-cannot fail is not a gate.
+An earlier version ran `extract` over an empty retrieval. Thus the stage never opened a PDF. It could not catch the pypdf `DependencyError` that this gate has caught. A gate that cannot fail is not a gate.
 
-This gate has earned its place twice. Two bugs reached the repository past a fully green suite and
-were caught only on the real path:
+This gate has proved its value twice. Two bugs passed a fully green suite and reached the repository. Only the real path caught them:
 
-- `httpx.Timeout` constructed with two of its four required arguments — unreachable through the
-  fixture transport.
-- `pypdf.errors.DependencyError: jbig2dec binary is not available`, which inherits from nothing
-  PDF-specific and aborted an entire run — unreachable through hand-built fixture PDFs.
+- `httpx.Timeout` was constructed with two of its four required arguments. The fixture transport cannot reach this error.
+- `pypdf.errors.DependencyError: jbig2dec binary is not available` inherits from nothing that is specific to PDF. It aborted a whole run. The hand-built fixture PDFs cannot reach this error.
 
-A fixture suite cannot fail in ways its fixtures cannot express.
+A fixture suite cannot fail in ways that its fixtures cannot express.
 
-## Running the lot
+## Run all gates
 
 ```bash
 uv sync --locked --all-groups
@@ -191,6 +145,4 @@ bash scripts/smoke.sh
 
 ## Metrics are evidence, not design targets
 
-A number that is gamed rather than earned is worse than no number, because it buys confidence
-without paying for it. Every threshold here has a reason written next to it, and every exception is
-in the [technical-debt register](technical-debt.md) with what it would take to close.
+A number that a team games is worse than no number. It gives confidence without cost. Each threshold has a reason that is written next to it. Each exception is in the [technical-debt register](technical-debt.md) with the work that closes it.

@@ -1,32 +1,31 @@
-# ADR-0020 — A scanned document publishes no figures
+# ADR-0020: A scanned document publishes no figures
 
 Status: accepted (2026-09-18)
 
 ## Context
 
-The extractor's own docstring predicted this case:
+The docstring of the extractor predicted this case:
 
 > A scanned document whose every page is one big image will produce one image per page, which is
 > correct but is not the same thing as "the figures in this document".
 
-26 of 146 published images were photographs of pages — scanned letters and typed correspondence.
-One document contributed 20 of them.
+26 of 146 published images were photographs of pages: scanned letters and typed correspondence. One document contributed 20 of them.
 
 ## Decision
 
-An image is *page-shaped* when its aspect ratio is within 10% of its page's, it is the only image on
-that page, and its long side is at least 600px.
+An image is *page-shaped* when all three conditions are true:
 
-A **document** is judged a scan when at least half of its images are page-shaped and at least three
-are. None of a scanned document's images are published.
+- Its aspect ratio is within 10% of the aspect ratio of its page.
+- It is the only image on that page.
+- Its long side is at least 600px.
 
-## Why per document
+The pipeline judges a **document** as a scan when at least half of its images are page-shaped and at least three of them are page-shaped. The pipeline publishes none of the images of a scanned document.
 
-The per-image test alone flags a legitimate row: a `581x722` full-width table, captioned
-`Table 7: Perceptions of respondents…`, has roughly its page's proportions. Dropping it would lose
-exactly the kind of row this corpus wants.
+## Why for each document
 
-A scanned document is scanned throughout. Measured on a real run:
+The test for each image alone flags a legitimate row. A full-width table of `581x722` has a caption `Table 7: Perceptions of respondents...`. It has about the proportions of its page. If the pipeline drops it, it loses exactly the kind of row that this corpus wants.
+
+A scanned document is scanned throughout. This is the measurement on a real run:
 
 ```
 18/20 page-like (90%)   a scanned document
@@ -34,15 +33,10 @@ A scanned document is scanned throughout. Measured on a real run:
  0/4, 0/9, 0/16, 0/5    ordinary documents with real figures
 ```
 
-The count requirement is what protects the single case; the share is what makes it a pattern.
+The count requirement protects the single case. The share makes it a pattern.
 
 ## Consequences
 
-- This is the first exclusion that is **not** a function of what the extraction index already held:
-  it needs the page dimensions, which are now recorded per image. An older index cannot be
-  re-judged, and `scanned_document_pages` returns nothing rather than guessing when the dimensions
-  are absent.
-- A born-digital paper whose figures happen to be full-page loses them if three or more are.
-  Accepted; the share requirement makes it unlikely.
-- Under ADR-0019 most of these rows would have gone anyway, since a page scan is uncaptioned. The
-  rule is kept because it is independent of caption quality: it states what the document *is*.
+- This is the first exclusion that is **not** a function of what the extraction index already held. It needs the page dimensions. The index now records them for each image. The pipeline cannot judge an older index again. `scanned_document_pages` returns nothing when the dimensions are absent. It does not guess.
+- A born-digital paper with full-page figures loses them if it has three or more. The team accepted this. The share requirement makes it unlikely.
+- Under ADR-0019, most of these rows would have gone anyway, because a page scan has no caption. The team keeps the rule because it does not depend on the quality of the captions. It states what the document *is*.

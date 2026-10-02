@@ -1,21 +1,17 @@
-# ADR-0003 — A dependency-free argparse CLI
+# ADR-0003: A dependency-free argparse CLI
 
 Status: accepted (2026-09-16)
 
 ## Context
 
-The CLI needs a handful of subcommands, a documented `--help`, and stable exit codes. Typer and
-Click are the obvious alternatives.
+The CLI needs a small number of subcommands, a documented `--help`, and stable exit codes. Typer and Click are the obvious alternatives.
 
 ## Decision
 
-Use `argparse` from the standard library. The package ships with an empty runtime dependency list
-at bootstrap.
+Use `argparse` from the standard library. At bootstrap, the package ships with an empty list of runtime dependencies.
 
 ## Consequences
 
-- Nothing to install to run `--help`; the Docker smoke path stays trivial and fast.
-- No rich help formatting, no shell completion, and subcommand wiring is more verbose than Typer's
-  decorators. Acceptable for a handful of commands in a proof of concept.
-- If the command surface grows past roughly a dozen options per subcommand, revisit this with a new
-  ADR rather than fighting `argparse`.
+- You install nothing to run `--help`. The Docker smoke path stays simple and fast.
+- There is no rich help formatting and no shell completion. The wiring of subcommands is longer than the decorators of Typer. This is acceptable for a small number of commands in a proof of concept.
+- If a subcommand has more than about twelve options, write a new ADR to review this decision. Do not fight `argparse`.

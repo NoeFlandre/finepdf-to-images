@@ -7,86 +7,58 @@ uv run finepdf-to-images extract \
   --out out/extract
 ```
 
-## Scope, deliberately
+## Scope
 
-This extracts images **embedded** in a PDF. It does **not**:
+This stage extracts the images that are **embedded** in a PDF. It does **not** do these tasks:
 
-- render pages to images,
-- run OCR,
-- infer layout or classify what a picture shows.
+- render pages to images
+- run OCR
+- infer the layout or classify what a picture shows
 
-A scanned document whose every page is one big image produces one image per page. That is correct,
-and it is not the same thing as "the figures in this document". Both limits are out of scope for
-this first POC — adding them without a fixture demonstrating they are needed would be guessing.
+A scanned document can have one big image on each page. The stage makes one image for each page. This is correct. It is not the same as "the figures in this document". Both limits are out of scope for this first proof of concept. If a fixture does not show that they are necessary, to add them is to guess.
 
-## What each image record carries
+## What each image record contains
 
-`document_row_id`, `document_row_index`, `pdf_sha256`, `page_index`, `image_index`, `sha256`,
-`mime`, `width`, `height`, `byte_size`, `path`, `duplicate_of`.
+Each record contains these fields: `document_row_id`, `document_row_index`, `pdf_sha256`, `page_index`, `image_index`, `sha256`, `mime`, `width`, `height`, `byte_size`, `path`, `duplicate_of`.
 
-Page and image indices are **positions, not identity**: the same picture can appear on several
-pages, and each occurrence gets its own record pointing at one shared artifact.
+The page index and the image index are **positions and not identities**. The same picture can occur on several pages. Each occurrence gets its own record. All records point to one shared artifact.
 
-Dimensions come from the **decoded image**, not from the PDF's `/Width` and `/Height` entries.
-Those are what the document claims; a manifest should record what the artifact actually is.
+The dimensions come from the **decoded image**. They do not come from the `/Width` and `/Height` entries of the PDF. These entries are what the document claims. A manifest must record what the artifact is.
 
 ## Input safety
 
-The stored path must be **exactly** the content-addressed path the digest implies, and the bytes
-read must hash back to that digest. Without the first check a hand-edited `retrieved.jsonl` naming
-`../secret.pdf` — or an absolute path, which `pathlib` resolves by discarding the root entirely —
-would read arbitrary files and publish the images inside them. The second catches a corrupted or
-swapped artifact rather than indexing it under a false identity.
+The stored path must be **exactly** the content-addressed path that the digest gives. The bytes that the stage reads must hash to that digest. The first check is necessary for this reason. A `retrieved.jsonl` that a person edited by hand can name `../secret.pdf`. It can also name an absolute path. `pathlib` resolves an absolute path and discards the root. Then the stage reads arbitrary files and publishes the images in them. The second check finds a corrupted or swapped artifact. The stage does not index it under a false identity.
 
-`max_images` is counted from the page resource dictionaries before this project decodes anything.
-Checking it while collecting meant a whole page of XObjects had already been decoded by the time
-the limit fired: a 395 KB document declaring 300 images at 600×600 peaked at **283 MB** before
-refusing, and now peaks at 13 MB.
+The stage counts `max_images` from the page resource dictionaries. It does this before this project decodes anything. In the past, the stage counted while it collected. A whole page of XObjects was already decoded when the limit took effect. A document of 395 KB declared 300 images at 600x600. It peaked at **283 MB** before it refused. Now it peaks at 13 MB.
 
-**That bound is not complete.** pypdf decodes a page's *inline* images (`BI`/`ID`/`EI`) in order to
-list them, so a small document with 300 inline images still peaks at several hundred MB. `max_pages`
-(default 300) bounds how many pages can do that; the per-page exposure remains. See
-[TD-008](technical-debt.md) — recorded rather than claimed as solved.
+**This bound is not complete.** pypdf decodes the *inline* images of a page (`BI`/`ID`/`EI`) in order to list them. Thus a small document with 300 inline images still peaks at several hundred MB. `max_pages` (default 300) limits how many pages can do this. The exposure for each page remains. See [TD-008](technical-debt.md). The project records this risk. It does not claim to solve it.
 
 ## Identity and layout
 
-`images/<aa>/<bb>/<sha256>.<ext>`, sharded so no directory grows without bound. Deduplication is by
-content across the **whole run**, so the same logo on forty pages is one artifact with forty
-references.
+The stage stores each image at `images/<aa>/<bb>/<sha256>.<ext>`. The path is sharded, so no directory grows without bound. The stage deduplicates by content across the **whole run**. Thus the same logo on forty pages is one artifact with forty references.
 
-Supported media types are `image/png`, `image/jpeg` and `image/tiff`. The bytes are checked against
-the magic bytes for the type the extractor claimed — a library's label is a claim, the bytes are the
-evidence, the same reasoning as the PDF header check in [retrieval](retrieval.md).
+The supported media types are `image/png`, `image/jpeg`, and `image/tiff`. The stage checks the bytes against the magic bytes of the type that the extractor claimed. The label of a library is a claim. The bytes are the evidence. This is the same reasoning as the PDF header check in [retrieval](retrieval.md).
 
 ## Ordering
 
-Document, then page, then position on the page. All three come from the PDF itself, so this is the
-document's own order rather than an arbitrary one, and two runs over the same input produce the
-same manifest bytes.
+The order is: document, then page, then position on the page. All three come from the PDF. Thus the order is the own order of the document and not an arbitrary order. Two runs over the same input give the same manifest bytes.
 
-Which occurrence of a repeated image is recorded as the original depends on the order of the input
-records. The artifact is content-addressed, so only the `duplicate_of` pointer moves — and it
-references `<pdf_sha256>#<page>.<index>`, not a row id, because a row id can be empty or repeated
-across documents.
+The order of the input records decides which occurrence of a repeated image is the original. The artifact is content-addressed. Thus only the `duplicate_of` pointer moves. It references `<pdf_sha256>#<page>.<index>` and not a row id. A row id can be empty, or it can repeat across documents.
 
 ## Failures
 
-A **PDF with no embedded images is a zero-image success**, not a failure — most PDFs on the open
-web genuinely contain none.
+A **PDF with no embedded images is a success with zero images**. It is not a failure. Most PDFs on the open web contain no images.
 
-A document that cannot be read fails with a bounded diagnostic and contributes **nothing**. Partial
-output from a document we could not read would be worse than none. One failure never stops the
-others.
+A document that the stage cannot read fails with a bounded diagnostic. It contributes **nothing**. Partial output from a document that we could not read is worse than no output. One failure never stops the other documents.
 
-Real reasons seen on the pinned shard:
+These are real reasons that occurred on the pinned shard:
 
-- `DependencyError: jbig2dec binary is not available` — an optional external decoder this pilot has
-  no reason to install.
-- `document declares more than 200 images; refusing to unpack` — a bound, not a preference.
+- `DependencyError: jbig2dec binary is not available`. This is an optional external decoder. The pilot has no reason to install it.
+- `document declares more than 200 images; refusing to unpack`. This is a bound and not a preference.
 
-## Real-data results
+## Results on real data
 
-Over the 16 PDFs retrieved from the pinned shard:
+The table shows the results for the 16 PDFs that the stage retrieved from the pinned shard:
 
 | | |
 | --- | --- |
@@ -97,47 +69,30 @@ Over the 16 PDFs retrieved from the pinned shard:
 | unique artifacts | 62 |
 | output size | 2.7 MB |
 | types | 52 JPEG, 19 PNG |
-| sizes | 2×50 to 1241×1755 |
+| sizes | 2x50 to 1241x1755 |
 
 ## Fixtures
 
-`tests/fixtures/pdfs/` holds seven PDFs **written by hand, byte by byte**, in
-`tests/fixtures/build_pdf_fixtures.py`. They are golden fixtures: a PDF library that changed its
-output between versions would change the expected hashes, and then the test would be asserting the
-library's behaviour rather than ours. Each is a few hundred bytes and readable in a text editor.
+The directory `tests/fixtures/pdfs/` holds seven PDFs. A person wrote them **by hand, byte by byte**, in `tests/fixtures/build_pdf_fixtures.py`. They are golden fixtures. If a PDF library changes its output between versions, the expected hashes change. Then the test asserts the behavior of the library and not our behavior. Each fixture is a few hundred bytes. You can read it in a text editor.
 
-Cases: two images on a page, the same image twice, no images at all, a rotated page, two pages,
-malformed bytes, and a truncated file.
+The cases are: two images on a page, the same image twice, no images, a rotated page, two pages, malformed bytes, and a truncated file.
 
 ```bash
 uv run python tests/fixtures/build_pdf_fixtures.py
 ```
 
-### What is pinned, and what cannot be
+### What the project pins and what it cannot pin
 
-The fixtures store raw `FlateDecode` samples, and **pypdf and Pillow re-encode them to PNG** — so
-the published artifact's bytes, its `sha256`, its content-addressed path and the manifest digest are
-all a function of those two libraries. Both are pinned to **exact** versions in `pyproject.toml`.
+The fixtures store raw `FlateDecode` samples. **pypdf and Pillow re-encode them to PNG.** Thus the bytes of the published artifact, its `sha256`, its content-addressed path, and the manifest digest all depend on these two libraries. `pyproject.toml` pins both libraries to **exact** versions.
 
-That is still not enough for portability. PNG encoding calls deflate, and the result depends on
-which implementation the installed wheel links: this project's macOS wheel uses **zlib-ng**, the
-Linux wheel in CI uses **plain zlib**, and they emit different bytes for identical pixels. Pinning
-the encoded hashes was tried and failed in CI — which is how [TD-007](technical-debt.md) came to be
-written down.
+This is not enough for portability. The PNG encoding calls deflate. The result depends on the implementation that the installed wheel links to. The macOS wheel of this project uses **zlib-ng**. The Linux wheel in CI uses **plain zlib**. They give different bytes for the same pixels. The project tried to pin the encoded hashes, and it failed in CI. For this reason the project wrote [TD-007](technical-debt.md).
 
-So the golden tests assert the **decoded pixels**, which are portable, along with dimensions, media
-type, count and ordering. Every extract manifest records an `encoder` block — pypdf version, Pillow
-version, Pillow's zlib build — so a published run says what produced it.
+Thus the golden tests assert the **decoded pixels**, which are portable. They also assert the dimensions, the media type, the count, and the order. Each extract manifest records an `encoder` block. It contains the pypdf version, the Pillow version, and the zlib build of Pillow. Thus a published run states what produced it.
 
-**The consequence to be aware of:** every other stage in this pipeline is byte-identical across
-machines. This one is not.
+**Note:** All other stages of this pipeline give the same bytes on all machines. This stage does not.
 
-## Images below 32px are discarded
+## The stage discards images below 32px
 
-PDFs embed table borders and underlines as real images. On the pilot, 44% of published rows were
-images with a side under 32px, 178 of them 1-3px tall — page rules, not pictures.
+PDFs embed table borders and underlines as real images. On the pilot, 44% of the published rows were images with a side under 32px. 178 of them were 1 to 3px tall. These are page rules and not pictures.
 
-An extracted image is kept only when **both** sides are at least 32px, applied at extraction so the
-index and its counts describe real images. See
-[ADR-0017](adr/0017-discard-images-below-32px.md) for the measured distribution behind the number.
-
+The stage keeps an extracted image only when **both** sides are at least 32px. It applies this rule at extraction. Thus the index and its counts describe real images. See [ADR-0017](adr/0017-discard-images-below-32px.md) for the measured distribution behind the number.
