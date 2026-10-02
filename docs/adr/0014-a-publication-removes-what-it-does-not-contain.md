@@ -1,69 +1,34 @@
-# ADR-0014 — A publication removes what it does not contain
+# ADR-0014: A publication removes what it does not contain
 
 Status: accepted (2026-09-17)
 
 ## Context
 
-`HuggingFaceHub.upload` emitted only `CommitOperationAdd`, so the published repository could only
-grow. Across successive layouts the pilot accumulated **203 files no current plan mentions**: 190
-loose images under `images/ab/cd/<digest>.png`, 3 PDFs, four `data/*.jsonl` from earlier schemas.
-A reader opening the dataset sees all of it, with no way to tell which files are current.
+`HuggingFaceHub.upload` emitted only `CommitOperationAdd`. Thus the published repository could only grow. Across successive layouts, the pilot collected **203 files that no current plan mentions**. These were 190 loose images in `images/ab/cd/<digest>.png`, 3 PDFs, and four `data/*.jsonl` files from earlier schemas. A reader who opens the dataset sees all of them. The reader cannot know which files are current.
 
-`is_noop` had the matching gap: it compared only the *planned* files against the remote. A
-publication whose entire purpose was removing files would have reported "already published and
-identical" and removed nothing.
+`is_noop` had the matching gap. It compared only the *planned* files with the remote. A publication that existed only to remove files reported "already published and identical". It removed nothing.
 
 ## Decision
 
-1. **A publication is a statement of what the dataset is**, not a list of additions. Remote files
-   the plan does not contain are deleted.
-2. **Only paths this stage writes are candidates.** `OWNED_PREFIXES` is `data/`, `images/`,
-   `pdfs/`, plus `README.md` and `manifest.json`. Anything else — a `LICENSE`, a `.gitignore`, an
-   asset the card links to, a file a maintainer added through the Hub's web UI — is left alone.
-   "Delete everything the plan does not name" is the wrong default for a repository other people
-   can also write to.
-3. **`.gitattributes` is never deleted.** The Hub manages it; removing it would fight the Hub over
-   LFS tracking rules. It is outside the owned prefixes anyway, so this is belt and braces.
-4. **Deletions ride in the same commit as the writes.** Two commits would leave a revision that is
-   neither the old dataset nor the new one, and a reader could fetch exactly that revision.
-5. **`is_noop` accounts for extra owned files**, or a cleanup publication is mistaken for a no-op.
-   An unowned extra does not block a no-op, so a maintainer's `LICENSE` does not make every run
-   look like it has work to do.
-6. **Verification covers both halves of the commit.** A deletion that did not happen is as much a
-   failed publication as a write that did not: the dataset would still be serving the old shape.
-7. **A missing artifact root is an error, not a smaller plan.** See Consequences.
+1. **A publication states what the dataset is.** It is not a list of additions. Delete the remote files that the plan does not contain.
+2. **Only the paths that this stage writes can be deleted.** `OWNED_PREFIXES` is `data/`, `images/`, `pdfs/`, `README.md`, and `manifest.json`. Do not touch anything else. This includes a `LICENSE`, a `.gitignore`, an asset that the card links to, and a file that a maintainer added through the web UI of the Hub. "Delete everything that the plan does not name" is the wrong default for a repository that other people can also write to.
+3. **Never delete `.gitattributes`.** The Hub manages it. If the stage removes it, the stage fights the Hub over the LFS tracking rules. It is outside the owned prefixes, so this rule is an extra safety measure.
+4. **Put the deletions in the same commit as the writes.** Two commits leave a revision that is neither the old dataset nor the new dataset. A reader can fetch exactly that revision.
+5. **Make `is_noop` count the extra owned files.** Otherwise it mistakes a cleanup publication for a no-op. An extra file that the stage does not own does not block a no-op. Thus the `LICENSE` of a maintainer does not make each run look like it has work to do.
+6. **Make the verification cover both halves of the commit.** A deletion that did not happen is a failed publication, in the same way as a write that did not happen. The dataset continues to serve the old shape.
+7. **Treat a missing artifact root as an error. It is not a smaller plan.** See the Consequences.
 
 ## Consequences
 
-- The published tree can shrink, which is what makes a minimal republished layout possible at
-  all: without deletion, a cleaner dataset could only be added alongside the mess it replaces.
-- **Forgetting a CLI flag became destructive, and had to be closed.** `--pdf-root` and
-  `--image-root` were optional: omitting one silently dropped those artifacts from the plan. That
-  was survivable while publication could only add files — the bytes simply were not uploaded that
-  run. With deletion, the same forgotten flag *removes already-published bytes from a public
-  dataset*, with exit code 0 and no warning. The `--image-root` case was worse than the
-  `--pdf-root` one: the PDFs still satisfied the card/payload agreement check, so nothing else
-  fired. A root is now required whenever the policy cleared anything, and what the policy cleared
-  is derived from the run rather than from which flags the caller passed — deriving it from the
-  flag was what made a forgotten argument look like "nothing was cleared".
-- Publishing metadata only is still possible. It is expressed by clearing nothing, not by omitting
-  an argument.
-- `FakeHub` models deletion and records what it was asked to remove, so the dry-run and idempotency
-  tests exercise the real behaviour. A dry run deletes nothing, asserted explicitly: deletion is
-  exactly the operation that would be easiest to let escape that guarantee.
-## Addendum (2026-09-17): stale stage inputs are refused
+- The published tree can shrink. This makes a minimal republished layout possible. Without deletion, a cleaner dataset can only be added next to the mess that it replaces.
+- **A forgotten CLI flag became destructive. The team had to close this gap.** `--pdf-root` and `--image-root` were optional. If you omitted one, the plan silently lost those artifacts. This was acceptable while a publication could only add files. The run simply did not upload the bytes. With deletion, the same forgotten flag *removes bytes that the stage already published to a public dataset*. The exit code is 0 and there is no warning. The `--image-root` case was worse than the `--pdf-root` case. The PDFs still satisfied the check for the agreement of the card and the payload. Thus no other check fired. A root is now required when the policy cleared anything. The code derives what the policy cleared from the run. It does not derive it from the flags that the caller passed. When the code derived it from the flag, a forgotten argument looked like "nothing was cleared".
+- You can still publish metadata only. To do so, clear nothing. Do not omit an argument.
+- `FakeHub` models deletion. It records what the code asked it to remove. Thus the dry-run tests and the idempotency tests use the real behavior. A dry run deletes nothing. A test asserts this explicitly. Deletion is the operation that is easiest to let escape this guarantee.
 
-Requiring `--image-root` closed the *forgotten argument* hole. It did not close the neighbouring
-one: pointing `--documents`, `--images`, `--scored` or `--retrieved` at a **truncated, empty or
-stale** file still shrank the plan, and a publication deletes what it does not contain — so the
-corresponding published bytes were removed, with exit code 0.
+## Addendum (2026-09-17): the stage refuses stale stage inputs
 
-Of the options weighed in #33, the first is now implemented: the stage inputs are cross-checked
-against `--extract-manifest`, which already records a content digest of exactly those row sets.
-That makes the check an equality rather than a heuristic — it names which file is wrong instead of
-guessing that "too much" is disappearing — and it costs nothing at runtime.
+The required `--image-root` closed the *forgotten argument* gap. It did not close the neighboring gap. If you pointed `--documents`, `--images`, `--scored`, or `--retrieved` at a **truncated, empty, or stale** file, the plan still shrank. A publication deletes what it does not contain. Thus the corresponding published bytes were removed, with exit code 0.
 
-The "refuse a large shrink unless `--allow-shrink`" backstop was not added. It guards the same
-hole less precisely, and every input that can shrink the plan is now covered by a digest the
-extract stage already publishes. A run with no extract manifest is still allowed, since publishing
-without an extraction step is documented behaviour.
+Issue #33 weighed several options. The code now implements the first option. It cross-checks the stage inputs against `--extract-manifest`. This manifest already records a content digest of exactly those row sets. Thus the check is an equality and not a heuristic. It names the file that is wrong. It does not guess that "too much" is disappearing. It costs nothing at runtime.
+
+The team did not add the backstop "refuse a large shrink unless `--allow-shrink`". It guards the same gap less precisely. A digest that the extract stage already publishes now covers each input that can shrink the plan. The stage still allows a run with no extract manifest. A publication without an extraction step is documented behavior.
