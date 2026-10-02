@@ -1,154 +1,88 @@
 # Technical debt
 
-Debt is recorded here explicitly rather than hidden. Each entry states what is missing, why it was
-acceptable to ship without it, and what would trigger paying it down.
+This page records the debt explicitly. It does not hide it. Each entry states what is missing. It gives the reason why it was acceptable to ship without it. It gives the trigger that starts the work to pay it.
 
-## ~~TD-001~~ — retired
+## ~~TD-001~~ (retired)
 
-The full gauntlet landed with issue #5: property tests, Gherkin acceptance scenarios, coverage,
-CRAP, mutation testing and a real-CLI smoke test, all wired into CI. See
-[Quality gates](quality.md).
+Issue #5 added the full gauntlet: property tests, Gherkin acceptance scenarios, coverage, CRAP, mutation testing, and a smoke test of the real CLI. CI runs all of them. See [Quality gates](quality.md).
 
-## TD-002 — `ty` is pre-1.0
+## TD-002: `ty` is pre-1.0
 
-**State.** Type checking uses Astral's `ty`, which is an alpha tool with an unstable configuration
-surface and incomplete inference.
+**State.** The type check uses `ty` from Astral. It is an alpha tool. Its configuration surface is unstable and its inference is incomplete.
 
-**Why.** It is the checker this project standardises on, it is fast, and it already catches real
-errors. The alternative would be a second type checker in CI for no additional signal.
+**Reason.** The project uses this checker as its standard. It is fast, and it already catches real errors. A second type checker in CI gives no additional signal.
 
-**Trigger.** Re-evaluate the pin when `ty` reaches a stable release, or if a false positive forces
-a suppression that hides a genuine defect.
+**Trigger.** Evaluate the pin again when `ty` reaches a stable release. Evaluate it also if a false positive forces a suppression that hides a real defect.
 
-## TD-003 — branch protection does not include administrators
+## TD-003: branch protection does not include administrators
 
-**State.** `main` requires `Deterministic quality gates`, `Docker smoke` and `Docs build` to pass,
-requires branches to be up to date, forbids force pushes and deletions, and requires linear
-history. It does **not** set `enforce_admins`, so a repository administrator can still merge past a
-red gate.
+**State.** `main` requires these checks to pass: `Deterministic quality gates`, `Docker smoke`, and `Docs build`. It requires branches to be up to date. It forbids force pushes and deletions. It requires a linear history. It does **not** set `enforce_admins`. Thus a repository administrator can merge past a red gate.
 
-**Why.** Locking administrators out of their own single-maintainer repository trades a real
-recovery path for a theoretical guarantee.
+**Reason.** The repository has one maintainer. If the project locks the administrator out, it removes a real recovery path. In exchange it gets a theoretical guarantee.
 
-**Trigger.** Enable `enforce_admins` if a second maintainer joins, or if a red gate is ever merged
-past in practice.
+**Trigger.** Enable `enforce_admins` if a second maintainer joins. Enable it also if anyone ever merges past a red gate in practice.
 
-## TD-004 — the pilot ships no curated allow-list entries
+## TD-004: the pilot has no curated allow-list entries
 
-**State.** `ALLOWED_LICENSES` is populated, but nothing in the pipeline produces a
-`curated-allowlist` declaration, so every artifact in the current run resolves to `metadata-only`.
-The published dataset therefore contains provenance and hashes and **no third-party bytes**.
+**State.** `ALLOWED_LICENSES` has values. But nothing in the pipeline produces a `curated-allowlist` declaration. Thus each artifact in the current run resolves to `metadata-only`. The published dataset contains provenance and hashes and **no third-party bytes**.
 
-**Why.** Clearing a document for redistribution means a human establishing its terms. For an
-arbitrary sample of the open web that is per-document work, and guessing is precisely what
-[ADR-0005](adr/0005-conservative-publication-policy.md) refuses to do. Shipping the policy without
-entries is the honest state, not a misconfiguration.
+**Reason.** To clear a document for redistribution, a person must establish its terms. For an arbitrary sample of the open web, this is work for each document. A guess is what [ADR-0005](adr/0005-conservative-publication-policy.md) refuses to do. A policy without entries is the honest state. It is not a wrong configuration.
 
-**Trigger.** Add entries — as reviewed, source-attributed records in this repository — when there
-is a concrete set of documents whose terms have actually been established. Until then the dataset
-card must say plainly that no source bytes are republished.
+**Trigger.** Add entries when there is a concrete set of documents with established terms. The entries must be reviewed records with a source attribution in this repository. Until then, the dataset card must state plainly that the dataset republishes no source bytes.
 
-## ~~TD-005~~ — retired
+## ~~TD-005~~ (retired)
 
-The policy is consumed by the retrieval stage (every record carries a `decide()` verdict) and by
-the publication stage, whose card is generated from `policy_summary()`. See
-[Publishing](publishing.md).
+The retrieval stage uses the policy. Each record carries a `decide()` verdict. The publication stage also uses it. Its card comes from `policy_summary()`. See [Publishing](publishing.md).
 
 <!-- The original entry, kept for the reasoning rather than as an open item. -->
 ### Why it was open
 
-**State.** `domain.policy.decide()` is complete and tested, but nothing calls it: there is no
-retrieval or extraction stage yet to produce artifacts for it to judge, and no publication stage to
-consume its verdicts or to write `policy_summary()` into a dataset card.
+**State.** `domain.policy.decide()` is complete and tested, but nothing calls it. There is no retrieval or extraction stage yet to produce artifacts for it to judge. There is no publication stage to use its verdicts or to write `policy_summary()` into a dataset card.
 
-**Why.** The policy is deliberately a standalone pure function, delivered ahead of the stages that
-need it so that those stages are built against a decided rule rather than inventing one. Wiring it
-into a stage that does not exist would mean writing that stage here.
+**Reason.** The policy is a standalone pure function on purpose. The project delivered it before the stages that need it. Thus those stages use a rule that is already decided. They do not invent a rule. To connect it to a stage that does not exist, the project must write that stage here.
 
-**Trigger.** Issues #3 and #4 pass `require_artifact_hash=True` when judging retrieved bytes; issue
-#2 writes the card from `policy_summary()` and publishes only what `decide()` permits. Until all
-three land, the statement "this project republishes no third-party bytes" is true because no bytes
-are published at all — not because the policy refused them.
+**Trigger.** Issues #3 and #4 pass `require_artifact_hash=True` when they judge retrieved bytes. Issue #2 writes the card from `policy_summary()`. It publishes only what `decide()` permits. Until all three are done, the statement "this project republishes no third-party bytes" is true because the project publishes no bytes at all. It is not true because the policy refused them.
 
-## TD-006 — DNS rebinding and hostnames resolving to private addresses
+## TD-006: DNS rebinding and host names that resolve to private addresses
 
-**State.** `validate_url` refuses IP **literals** that name a loopback, private, link-local,
-reserved, multicast or unspecified address. A *hostname* that resolves to one of those is not
-caught, and neither is a host that resolves differently between the check and the request.
+**State.** `validate_url` refuses IP **literals** that name a loopback, private, link-local, reserved, multicast, or unspecified address. It does not catch a *host name* that resolves to one of those addresses. It also does not catch a host that resolves differently between the check and the request.
 
-**Why.** Resolving a name is I/O, and the URL rules live in the pure domain precisely so they can
-be tested without a network. Closing this properly means resolving in the adapter, checking the
-resolved address, and pinning the connection to it — real work, and more than a bounded pilot that
-fetches a few dozen public documents needs.
+**Reason.** To resolve a name is I/O. The URL rules are in the pure domain so that tests do not need a network. To close this gap correctly, the code must resolve the name in the adapter. It must check the resolved address. It must pin the connection to that address. This is real work. A bounded pilot that fetches a few dozen public documents does not need it.
 
-**Trigger.** Before this pipeline is ever pointed at untrusted URLs from inside a network with
-anything worth reaching, or run as a service. Until then the exposure is a developer machine
-fetching public PDFs.
+**Trigger.** Do this work before anyone points this pipeline at untrusted URLs from inside a network that has valuable targets. Do it also before anyone runs the pipeline as a service. Until then, the exposure is a developer machine that fetches public PDFs.
 
-## TD-007 — extracted image bytes are not portable across Pillow builds
+## TD-007: the bytes of extracted images are not portable across Pillow builds
 
-**State.** Embedded images that are not already in a standard format are re-encoded to PNG by
-Pillow. PNG encoding calls deflate, and the result depends on which implementation the installed
-wheel was built against: this project's macOS wheel links **zlib-ng**, the Linux wheel in CI links
-**plain zlib**, and they produce different bytes for identical pixels.
+**State.** Pillow re-encodes the embedded images to PNG when they are not already in a standard format. The PNG encoding calls deflate. The result depends on the implementation that the installed wheel uses. The macOS wheel of this project links **zlib-ng**. The Linux wheel in CI links **plain zlib**. They give different bytes for the same pixels.
 
-Consequently the same pipeline, on the same inputs, with the same pinned dependency versions,
-produces **different image `sha256` values, different content-addressed paths and a different
-`images_digest`** on a different platform. Everything else in the pipeline — selection, scoring,
-retrieval manifests, PDF artifacts — is genuinely byte-identical; this stage is the exception.
+Thus the same pipeline, on the same inputs, with the same pinned dependency versions, gives **different image `sha256` values, different content-addressed paths, and a different `images_digest`** on a different platform. All other stages are byte-identical: selection, scoring, retrieval manifests, and PDF artifacts. This stage is the exception.
 
-**How it was found.** Golden tests pinning the encoded hashes passed locally and failed in CI.
-That is the test doing its job.
+**How the team found it.** Golden tests that pinned the encoded hashes passed locally and failed in CI. The test did its job.
 
-**What is done about it.** The golden tests assert the **decoded pixels**, which are portable. Every
-extract manifest records `encoder`: the pypdf version, the Pillow version and Pillow's zlib build,
-so a published run says what produced it.
+**What the team did.** The golden tests assert the **decoded pixels**, which are portable. Each extract manifest records `encoder`: the pypdf version, the Pillow version, and the zlib build of Pillow. Thus a published run states what produced it.
 
-**Why it is not simply fixed.** The options all cost something: encoding at `compress_level=0`
-removes the variance but inflates a 1241×1755 image from ~200 KB to ~6.5 MB; publishing the PDF's
-original embedded stream bytes is faithful and portable but for raw-sample images is not a viewable
-file; vendoring an encoder is disproportionate for a pilot.
+**Reason why the team did not simply fix it.** Each option has a cost:
 
-**Trigger.** Before anyone relies on image hashes to compare two runs made on different machines,
-or before the published dataset is regenerated on a different platform and the artifact paths
-change. If that matters more than file size, publish the original embedded streams and record the
-format per image.
+- Encoding at `compress_level=0` removes the variance. But it increases an image of 1241x1755 from about 200 KB to about 6.5 MB.
+- To publish the original embedded stream bytes of the PDF is faithful and portable. But for images with raw samples the result is not a viewable file.
+- To vendor an encoder is not proportionate for a pilot.
 
-## TD-008 — inline images are decoded before they can be counted
+**Trigger.** Do this work before anyone uses image hashes to compare two runs from different machines. Do it also before anyone regenerates the published dataset on a different platform, because the artifact paths change. If this matters more than the file size, publish the original embedded streams and record the format of each image.
 
-**State.** `max_images` is checked against the images a page *declares*, before this project decodes
-any of them. That bounds image XObjects. It does not bound **inline** images — the `BI`/`ID`/`EI`
-operators inside a content stream — because pypdf decodes each one in order to name it, inside the
-same call that lists a page's images. A hand-built **1.4 KB** document carrying 300 flate-compressed
-600×600 inline images peaks at roughly **300 MB** of resident memory before the limit fires. That is
-a decompression bomb, and the input size bound from the retrieval stage does not help.
+## TD-008: the code decodes inline images before it can count them
 
-**What is done about it.** `max_pages` (default 300) bounds how many pages can do this, since each
-page is parsed whether or not it contains images. The per-page exposure remains.
+**State.** The code checks `max_images` against the images that a page *declares*. It does this before this project decodes any image. This bounds the image XObjects. It does not bound the **inline** images. These are the `BI`/`ID`/`EI` operators in a content stream. pypdf decodes each inline image in order to name it. It does this in the same call that lists the images of a page. A hand-built document of **1.4 KB** has 300 flate-compressed inline images of 600x600. It peaks at about **300 MB** of resident memory before the limit takes effect. This is a decompression bomb. The input size bound from the retrieval stage does not help.
 
-**Why it is not simply fixed.** Bounding a single page means not using pypdf's content-stream
-parser — either pre-scanning the raw stream for inline-image operators before handing the page over,
-or replacing the parser. Both are disproportionate for a pilot that fetches a few dozen public
-documents under a 25 MB cap.
+**What the team did.** `max_pages` (default 300) bounds how many pages can do this. The code parses each page, with or without images. The exposure for each page remains.
 
-**How it was found.** An independent review measured it against the code that had just "fixed" the
-XObject case. The regression test written at that time asserted only that *our* decode path did not
-run, and could not observe decoding inside pypdf — it passed against the vulnerable code. That test
-now says so in its own docstring.
+**Reason why the team did not simply fix it.** To bound a single page, the code must not use the content-stream parser of pypdf. There are two options. The code can scan the raw stream for inline-image operators before it gives the page to pypdf. Or the project can replace the parser. Both options are not proportionate for a pilot that fetches a few dozen public documents under a cap of 25 MB.
 
-**Trigger.** Before this stage is run over untrusted documents at scale, unattended, or anywhere a
-300 MB spike per document matters. A per-process memory limit would be a cheaper mitigation than
-replacing the parser.
+**How the team found it.** An independent review measured it against the code that had just "fixed" the XObject case. The regression test from that time asserted only that *our* decode path did not run. It could not observe the decoding inside pypdf. It passed against the vulnerable code. The docstring of that test now says so.
 
-## Upgrading `pyarrow` is a republication
+**Trigger.** Do this work before anyone runs this stage over untrusted documents at scale or unattended. Do it also before anyone runs it where a spike of 300 MB for each document matters. A memory limit for each process is a cheaper mitigation than the replacement of the parser.
 
-`pyarrow` is pinned exactly. `adapters/parquet.py` pins every writer option it can reach, but the
-parquet footer's `created_by` field carries pyarrow's own version string and cannot be set through
-the API. The published bytes are therefore byte-stable for a given pyarrow version and change on
-upgrade.
+## An upgrade of `pyarrow` is a republication
 
-Because publication is idempotent by content hash, bumping it rewrites every published parquet and
-produces a commit that changes no data, briefly making "a second apply is a no-op" false for
-reasons unrelated to the dataset. Treat an upgrade as a deliberate republication: bump it on its
-own, re-publish, and say so.
+The project pins `pyarrow` to an exact version. `adapters/parquet.py` pins each writer option that it can reach. But the `created_by` field of the Parquet footer carries the version string of pyarrow. The API cannot set it. Thus the published bytes are byte-stable for a given pyarrow version. They change when you upgrade.
 
+Publication is idempotent by content hash. Thus an upgrade rewrites each published Parquet file. It makes a commit that changes no data. For a short time, "a second apply is a no-op" is false, for a reason that is not related to the dataset. Treat an upgrade as a deliberate republication. Upgrade it alone. Publish again. Say so.
